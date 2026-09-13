@@ -1,0 +1,58 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+// A draggable horizontal divider between two vertically stacked sections.
+//
+// The divider controls the height of the section above it (`current-height`).
+// Dragging reports the new height through `height-changed` (on every move, for
+// live updates) and `drag-ended` (on release, for persistence).
+//
+// The drag math: the mouse position is tracked relative to the divider, which
+// moves as the section above it resizes. Referencing the press position
+// (`press-rel-y`) instead of the previous move cancels that feedback, so the
+// new height equals the current height plus the mouse travel since press.
+export component Splitter inherits Rectangle {
+    in property <float> current-height: 0;
+    callback height-changed(new-height: float);
+    callback drag-ended(new-height: float);
+
+    property <float> press-rel-y: 0;
+    property <bool> dragging: false;
+
+    background: transparent;
+
+    bar := Rectangle {
+        x: 0;
+        y: (parent.height - 4px) / 2;
+        width: parent.width;
+        height: 4px;
+        background: root.dragging ? #4fc3f7 : (ta.has-hover ? #5a5a5a : #3c3c3c);
+        border-radius: 2px;
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: MouseCursor.row-resize;
+        accessible-role: AccessibleRole.slider;
+        accessible-label: "Splitter";
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.dragging = true;
+                root.press-rel-y = self.mouse-y / 1px;
+            } else if (event.kind == PointerEventKind.move && root.dragging) {
+                let new-h = root.current-height + (self.mouse-y / 1px - root.press-rel-y);
+                root.height-changed(new-h);
+            } else if (event.kind == PointerEventKind.up
+                || event.kind == PointerEventKind.cancel) {
+                if root.dragging {
+                    root.dragging = false;
+                    root.drag-ended(root.current-height);
+                }
+            }
+        }
+    }
+}

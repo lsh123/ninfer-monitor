@@ -1,0 +1,116 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+export component StatusBar inherits Rectangle {
+    in property <string> status-text: "—";
+    in property <color> status-color: #9e9e9e;
+    in property <string> file-name: "";
+    in property <string> file-name-full: "";
+    in property <string> last-event: "—";
+    in property <string> errors-text: "Errors: 0";
+    in property <string> skipped-text: "Skipped 0";
+
+    height: 32px;
+    background: #2d2d2d;
+    border-radius: 6px;
+
+    property <length> bar-padding: 8px;
+    property <length> bar-spacing: 12px;
+    property <length> dot-size: 8px;
+    property <length> left-spacing: 6px;
+
+    // Natural width of the longest status word ("Disconnected"): the status
+    // text gets this fixed width so the timestamp and everything to its right
+    // never shift when the status changes.
+    status-measure := Text {
+        text: "Disconnected";
+        font-size: 11px;
+        visible: false;
+    }
+
+    // Natural width of the widest plausible timestamp: the timestamp gets
+    // this fixed width so the left group keeps a constant size.
+    time-measure := Text {
+        text: "88:88:88.888";
+        font-size: 11px;
+        visible: false;
+    }
+
+    // Natural width of the full "Log file: <name>" text.
+    file-measure := Text {
+        text: root.file-name-full == "" ? "No file selected" : "Log file: " + root.file-name-full;
+        font-size: 11px;
+        visible: false;
+    }
+
+    out property <length> file-full-width: file-measure.width;
+
+    // Space available for the file-name text: the file text's actual layout
+    // width (the stretch area between the left group and the right counters).
+    out property <length> file-available: file-text.width;
+
+    HorizontalLayout {
+        padding: root.bar-padding;
+        spacing: root.bar-spacing;
+
+        HorizontalLayout {
+            spacing: root.left-spacing;
+            cross-axis-alignment: CrossAxisAlignment.center;
+
+            Rectangle {
+                width: root.dot-size;
+                height: root.dot-size;
+                border-radius: 4px;
+                background: root.status-color;
+            }
+
+            status-label := Text {
+                text: root.status-text;
+                width: status-measure.width;
+                font-size: 11px;
+                color: #b0b0b0;
+                vertical-alignment: TextVerticalAlignment.center;
+            }
+
+            time-label := Text {
+                text: root.last-event;
+                width: time-measure.width;
+                font-size: 11px;
+                color: #8a8a8a;
+                vertical-alignment: TextVerticalAlignment.center;
+            }
+        }
+
+        file-text := Text {
+            horizontal-stretch: 1;
+            text: root.file-name-full == "" ? "No file selected" : "Log file: " + root.file-name;
+            font-size: 11px;
+            color: #9e9e9e;
+            overflow: TextOverflow.elide;
+            vertical-alignment: TextVerticalAlignment.center;
+        }
+
+        right := Rectangle {
+            HorizontalLayout {
+                spacing: root.bar-spacing;
+
+                Text {
+                    text: root.errors-text;
+                    font-size: 11px;
+                    color: #b0b0b0;
+                    vertical-alignment: TextVerticalAlignment.center;
+                }
+
+                Text {
+                    text: root.skipped-text;
+                    font-size: 11px;
+                    color: #b0b0b0;
+                    vertical-alignment: TextVerticalAlignment.center;
+                }
+            }
+        }
+    }
+}

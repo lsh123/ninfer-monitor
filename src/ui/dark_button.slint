@@ -1,0 +1,82 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+export component DarkButton inherits Rectangle {
+    in property <string> text: "";
+    in property <string> accessible-text: "";
+    in property <bool> selected: false;
+    in property <bool> disabled: false;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    property <bool> has-focus: scope.has-focus;
+    callback clicked();
+
+    background: root.disabled
+        ? #2a2a2a
+        : (root.selected
+            ? (ta.pressed ? #264a70 : #2d5a88)
+            : (ta.pressed ? #3d3d3d : #333333));
+    border-radius: 4px;
+    border-width: root.has-focus && !root.disabled ? 2px : 0px;
+    border-color: #4fc3f7;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.accessible-text != "" ? root.accessible-text : root.text;
+    forward-focus: scope;
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: root.disabled ? MouseCursor.default : MouseCursor.pointer;
+        clicked => {
+            if !root.disabled {
+                root.clicked();
+            }
+        }
+    }
+
+    scope := FocusScope {
+        x: 0;
+        width: 0;
+        focus-on-tab-navigation: !root.disabled;
+        key-pressed(event) => {
+            if root.disabled {
+                return reject;
+            }
+            if event.text == " " || event.text == "\n" {
+                ta.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if root.has-icon: icon-row := HorizontalLayout {
+        alignment: center;
+        cross-axis-alignment: center;
+        spacing: 6px;
+
+        Image {
+            source: root.icon;
+            width: 16px;
+            height: 16px;
+            opacity: root.disabled ? 0.4 : 1.0;
+        }
+
+        if root.text != "": Text {
+            text: root.text;
+            font-size: 12px;
+            color: root.disabled ? #666666 : #e0e0e0;
+        }
+    }
+
+    if !root.has-icon && root.text != "": Text {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        text: root.text;
+        font-size: 12px;
+        color: root.disabled ? #666666 : #e0e0e0;
+    }
+}

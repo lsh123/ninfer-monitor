@@ -1,0 +1,512 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+import { AboutPanel } from "about_panel.slint";
+import { DarkButton } from "dark_button.slint";
+import { MetricWidget } from "metric_widget.slint";
+import { RequestTable, RequestRow } from "request_table.slint";
+import { ServerInfoPanel } from "server_info_panel.slint";
+import { SettingsPanel } from "settings_panel.slint";
+import { Splitter } from "splitter.slint";
+import { StatusBar } from "status_bar.slint";
+
+export component MainWindow inherits Window {
+    title: "NInferMonitor";
+    icon: @image-url("icons/app_icon.png");
+    preferred-width: 1280px;
+    preferred-height: 680px;
+    min-width: 1024px;
+    min-height: 600px;
+    background: #1e1e1e;
+
+    in property <string> file-name: "";
+    in property <string> file-name-full: "";
+    in property <string> connection-status: "—";
+    in property <color> status-color: #9e9e9e;
+    in property <string> last-event: "—";
+    in property <string> errors-text: "Errors: 0";
+    in property <string> skipped-text: "Skipped 0";
+    in property <bool> paused: false;
+    in property <bool> controls-enabled: true;
+    in property <string> schema-warning: "";
+
+    in property <string> kpi-decode-value: "—";
+    in property <int> kpi-decode-trend: 0;
+
+    in property <string> kpi-prefill-value: "—";
+    in property <int> kpi-prefill-trend: 0;
+
+    in property <string> kpi-active-value: "—";
+    in property <int> kpi-active-trend: 0;
+
+    in property <string> kpi-waiting-value: "—";
+    in property <int> kpi-waiting-trend: 0;
+
+    in property <string> kpi-ttft-value: "—";
+    in property <int> kpi-ttft-trend: 0;
+
+    in property <string> kpi-decode-lat-value: "—";
+    in property <int> kpi-decode-lat-trend: 0;
+
+    in property <string> kpi-cache-value: "—";
+    in property <int> kpi-cache-trend: 0;
+
+    in property <string> kpi-spec-value: "—";
+    in property <int> kpi-spec-trend: 0;
+
+    in property <bool> settings-visible: false;
+    in-out property <int> settings-poll-ms: 500;
+    in-out property <int> settings-max-requests: 1000;
+
+    in property <bool> about-visible: false;
+    in property <string> about-version: "";
+
+    // Chart window (FR-7.1); owned by main.rs (`ChartState::window_ms`) and
+    // mirrored here by the window-changed handler.
+    in property <int> chart-window-ms: 300000;
+
+    // Split-panel fractions (FR-7.5): `charts-frac` is the share of the
+    // section space given to the charts; `table-frac` is the share of the
+    // remaining space given to the request table (the server-info panel takes
+    // the rest). Both are set by main.rs from the persisted config.
+    in property <float> charts-frac: 0.5;
+    in property <float> table-frac: 0.5;
+
+    property <image> icon-open: @image-url("icons/open_folder.svg");
+    property <image> icon-pause: @image-url("icons/pause.svg");
+    property <image> icon-play: @image-url("icons/play.svg");
+    property <image> icon-trash: @image-url("icons/trash.svg");
+    property <image> icon-settings: @image-url("icons/gear.svg");
+
+    in property <image> chart-throughput-image;
+    in property <image> chart-latency-image;
+    in property <image> chart-cache-image;
+    in property <image> chart-scheduler-image;
+
+    out property <float> widget-throughput-w: widget-throughput.chart-width;
+    out property <float> widget-throughput-h: widget-throughput.chart-height;
+    out property <float> widget-latency-w: widget-latency.chart-width;
+    out property <float> widget-latency-h: widget-latency.chart-height;
+    out property <float> widget-cache-w: widget-cache.chart-width;
+    out property <float> widget-cache-h: widget-cache.chart-height;
+    out property <float> widget-scheduler-w: widget-scheduler.chart-width;
+    out property <float> widget-scheduler-h: widget-scheduler.chart-height;
+
+    out property <length> file-full-width: status-bar.file-full-width;
+    out property <length> file-available: status-bar.file-available;
+
+    in property <[RequestRow]> request-rows;
+    in property <length> table-content-height: 0px;
+    in-out property <length> table-scroll-y;
+    in-out property <bool> table-follow: true;
+
+    in property <string> server-info-summary: "No server info yet";
+    in property <string> server-info-model: "—";
+    in property <string> server-info-engine: "—";
+    in property <string> server-info-gpu: "—";
+    in property <string> server-info-memory: "—";
+    in property <string> server-info-server: "—";
+
+    callback tick();
+    callback open-file();
+    callback pause-resume();
+    callback clear();
+    callback row-clicked(id: string);
+    callback settings();
+    callback settings-save(poll-ms: int, max-requests: int);
+    callback settings-close();
+    callback about();
+    callback about-close();
+    callback window-changed(ms: int);
+    callback split-changed(which: int, frac: float);
+    callback split-released(which: int, frac: float);
+
+    Timer {
+        interval: 250ms;
+        running: true;
+        triggered => {
+            root.tick();
+        }
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+
+        header-bar := Rectangle {
+            height: 40px;
+            background: #252526;
+            border-radius: 6px;
+
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 12px;
+
+                btn-open := DarkButton {
+                    text: "Open file…";
+                    icon: root.icon-open;
+                    has-icon: true;
+                    width: 90px;
+                    clicked => {
+                        root.open-file();
+                    }
+                }
+
+                btn-pause := DarkButton {
+                    text: root.paused ? "Resume" : "Pause";
+                    icon: root.paused ? root.icon-play : root.icon-pause;
+                    has-icon: true;
+                    width: 90px;
+                    disabled: !root.controls-enabled;
+                    clicked => {
+                        root.pause-resume();
+                    }
+                }
+
+                btn-clear := DarkButton {
+                    text: "Clear";
+                    icon: root.icon-trash;
+                    has-icon: true;
+                    width: 90px;
+                    disabled: !root.controls-enabled;
+                    clicked => {
+                        root.clear();
+                    }
+                }
+
+                Rectangle {
+                    width: 72px;
+                }
+
+                win-1m := DarkButton {
+                    text: "1m";
+                    width: 36px;
+                    selected: root.chart-window-ms == 60000;
+                    disabled: !root.controls-enabled;
+                    clicked => {
+                        root.window-changed(60000);
+                    }
+                }
+
+                win-5m := DarkButton {
+                    text: "5m";
+                    width: 36px;
+                    selected: root.chart-window-ms == 300000;
+                    disabled: !root.controls-enabled;
+                    clicked => {
+                        root.window-changed(300000);
+                    }
+                }
+
+                win-15m := DarkButton {
+                    text: "15m";
+                    width: 36px;
+                    selected: root.chart-window-ms == 900000;
+                    disabled: !root.controls-enabled;
+                    clicked => {
+                        root.window-changed(900000);
+                    }
+                }
+
+                win-30m := DarkButton {
+                    text: "30m";
+                    width: 36px;
+                    selected: root.chart-window-ms == 1800000;
+                    disabled: !root.controls-enabled;
+                    clicked => {
+                        root.window-changed(1800000);
+                    }
+                }
+
+                win-1h := DarkButton {
+                    text: "1h";
+                    width: 36px;
+                    selected: root.chart-window-ms == 3600000;
+                    disabled: !root.controls-enabled;
+                    clicked => {
+                        root.window-changed(3600000);
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                btn-settings := DarkButton {
+                    icon: root.icon-settings;
+                    has-icon: true;
+                    accessible-text: "Settings";
+                    width: 24px;
+                    clicked => {
+                        root.settings();
+                    }
+                }
+            }
+        }
+
+        if root.schema-warning != "": schema-banner := Rectangle {
+            height: 28px;
+            background: #4a3b12;
+            border-width: 1px;
+            border-color: #ffc107;
+            border-radius: 6px;
+
+            Text {
+                x: 10px;
+                y: (parent.height - self.height) / 2;
+                width: parent.width - 20px;
+                text: root.schema-warning;
+                font-size: 12px;
+                color: #ffc107;
+                overflow: TextOverflow.elide;
+            }
+        }
+
+        // The three vertically stacked sections (charts, request table,
+        // server info) separated by two draggable splitters. The section
+        // heights are derived from the `charts-frac`/`table-frac` fractions
+        // (FR-7.5); the server-info panel takes whatever is left.
+        content-area := Rectangle {
+            vertical-stretch: 1;
+
+            charts-area := Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: root.charts-frac * Math.max(0px, parent.height - 16px);
+
+                charts-layout := VerticalLayout {
+                    spacing: 8px;
+
+                    chart-row-top := Rectangle {
+                        vertical-stretch: 1;
+
+                        widget-throughput := MetricWidget {
+                            x: 0;
+                            y: 0;
+                            width: (parent.width - 8px) / 2;
+                            height: parent.height;
+                            title: "Throughput (tok/s)";
+                            left-label: "Prefill";
+                            left-value: root.kpi-prefill-value;
+                            left-trend: root.kpi-prefill-trend;
+                            left-up-is-good: true;
+                            right-label: "Decode";
+                            right-value: root.kpi-decode-value;
+                            right-trend: root.kpi-decode-trend;
+                            right-up-is-good: true;
+                            chart-image: root.chart-throughput-image;
+                        }
+
+                        widget-latency := MetricWidget {
+                            x: (parent.width + 8px) / 2;
+                            y: 0;
+                            width: (parent.width - 8px) / 2;
+                            height: parent.height;
+                            title: "Latency (ms)";
+                            left-label: "TTFT";
+                            left-value: root.kpi-ttft-value;
+                            left-trend: root.kpi-ttft-trend;
+                            left-up-is-good: false;
+                            right-label: "Per-token lat";
+                            right-value: root.kpi-decode-lat-value;
+                            right-trend: root.kpi-decode-lat-trend;
+                            right-up-is-good: false;
+                            chart-image: root.chart-latency-image;
+                        }
+                    }
+
+                    chart-row-bottom := Rectangle {
+                        vertical-stretch: 1;
+
+                        widget-cache := MetricWidget {
+                            x: 0;
+                            y: 0;
+                            width: (parent.width - 8px) / 2;
+                            height: parent.height;
+                            title: "Cache (%)";
+                            left-label: "Cache hit";
+                            left-value: root.kpi-cache-value;
+                            left-trend: root.kpi-cache-trend;
+                            left-up-is-good: true;
+                            right-label: "Spec. accept";
+                            right-value: root.kpi-spec-value;
+                            right-trend: root.kpi-spec-trend;
+                            right-up-is-good: true;
+                            chart-image: root.chart-cache-image;
+                        }
+
+                        widget-scheduler := MetricWidget {
+                            x: (parent.width + 8px) / 2;
+                            y: 0;
+                            width: (parent.width - 8px) / 2;
+                            height: parent.height;
+                            title: "Scheduler";
+                            show-flat-trend: false;
+                            left-label: "Active";
+                            left-value: root.kpi-active-value;
+                            left-trend: root.kpi-active-trend;
+                            left-up-is-good: true;
+                            right-label: "Waiting";
+                            right-value: root.kpi-waiting-value;
+                            right-trend: root.kpi-waiting-trend;
+                            right-up-is-good: false;
+                            chart-image: root.chart-scheduler-image;
+                        }
+                    }
+                }
+            }
+
+            splitter1 := Splitter {
+                x: 0;
+                y: charts-area.height;
+                width: parent.width;
+                height: 8px;
+                current-height: charts-area.height / 1px;
+                height-changed(h) => {
+                    let space = (content-area.height - 16px) / 1px;
+                    if space > 0 {
+                        root.split-changed(0, h / space);
+                    }
+                }
+                drag-ended(h) => {
+                    let space = (content-area.height - 16px) / 1px;
+                    if space > 0 {
+                        root.split-released(0, h / space);
+                    }
+                }
+            }
+
+            inner-area := Rectangle {
+                x: 0;
+                y: charts-area.height + 8px;
+                width: parent.width;
+                height: Math.max(0px, parent.height - charts-area.height - 8px);
+
+                request-table := RequestTable {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: root.table-frac * Math.max(0px, parent.height - 8px);
+                    rows: root.request-rows;
+                    content-height: root.table-content-height;
+                    scroll-y <=> root.table-scroll-y;
+                    follow <=> root.table-follow;
+                    row-clicked(id) => {
+                        root.row-clicked(id);
+                    }
+                }
+
+                splitter2 := Splitter {
+                    x: 0;
+                    y: request-table.height;
+                    width: parent.width;
+                    height: 8px;
+                    current-height: request-table.height / 1px;
+                    height-changed(h) => {
+                        let space = (inner-area.height - 8px) / 1px;
+                        if space > 0 {
+                            root.split-changed(1, h / space);
+                        }
+                    }
+                    drag-ended(h) => {
+                        let space = (inner-area.height - 8px) / 1px;
+                        if space > 0 {
+                            root.split-released(1, h / space);
+                        }
+                    }
+                }
+
+                server-info := ServerInfoPanel {
+                    x: 0;
+                    y: request-table.height + 8px;
+                    width: parent.width;
+                    height: Math.max(0px, parent.height - request-table.height - 8px);
+                    summary: root.server-info-summary;
+                    model: root.server-info-model;
+                    engine: root.server-info-engine;
+                    gpu: root.server-info-gpu;
+                    memory: root.server-info-memory;
+                    server: root.server-info-server;
+                }
+            }
+        }
+
+        status-bar := StatusBar {
+            status-text: root.connection-status;
+            status-color: root.status-color;
+            file-name: root.file-name;
+            file-name-full: root.file-name-full;
+            last-event: root.last-event;
+            errors-text: root.errors-text;
+            skipped-text: root.skipped-text;
+        }
+    }
+
+    if root.settings-visible: settings-backdrop := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #000000aa;
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.settings-close();
+            }
+        }
+    }
+
+    if root.settings-visible: settings-panel := SettingsPanel {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 380px;
+        height: parent.height * 2 / 3;
+        poll-ms <=> root.settings-poll-ms;
+        max-requests <=> root.settings-max-requests;
+        save() => {
+            root.settings-save(root.settings-poll-ms, root.settings-max-requests);
+        }
+        close() => {
+            root.settings-close();
+        }
+        about() => {
+            root.about();
+        }
+        escape() => {
+            if root.about-visible {
+                root.about-close();
+            } else {
+                root.settings-close();
+            }
+        }
+    }
+
+    if root.about-visible: about-backdrop := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #000000aa;
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.about-close();
+            }
+        }
+    }
+
+    if root.about-visible: about-panel := AboutPanel {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 380px;
+        height: parent.height * 2 / 3;
+        version: root.about-version;
+        close() => {
+            root.about-close();
+        }
+    }
+}

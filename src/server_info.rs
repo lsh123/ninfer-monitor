@@ -1,0 +1,550 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+use crate::parser::{MemorySegment, ServerStartEvent};
+use crate::store::Store;
+
+/// Shown for missing values (FR-3.3 convention).
+const NO_DATA: &str = "—";
+
+/// Display state of the server info panel (FR-6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerInfoSnapshot {
+    pub summary: String,
+    pub model: String,
+    pub engine: String,
+    pub gpu: String,
+    pub memory: String,
+    pub server: String,
+}
+
+/// Compute the display state of the server info panel from the latest
+/// `server_start` (FR-6.1). The panel updates automatically on a server
+/// restart because the store keeps only the newest `server_start` (FR-6.2).
+pub fn snapshot(store: &Store) -> ServerInfoSnapshot {
+    let Some(s) = store.server() else {
+        return ServerInfoSnapshot {
+            summary: "No server info yet".to_owned(),
+            model: NO_DATA.to_owned(),
+            engine: NO_DATA.to_owned(),
+            gpu: NO_DATA.to_owned(),
+            memory: NO_DATA.to_owned(),
+            server: NO_DATA.to_owned(),
+        };
+    };
+    ServerInfoSnapshot {
+        summary: summary(s),
+        model: model_line(s),
+        engine: engine_line(s),
+        gpu: gpu_line(s),
+        memory: memory_line(s),
+        server: server_line(s),
+    }
+}
+
+/// True when the panel must be (re)applied: nothing was applied yet or the
+/// current snapshot differs from the last-applied one. Comparing snapshots
+/// instead of a `server_start` counter keeps the panel in sync when the
+/// store is cleared or replaced (M11 Clear / Open file).
+pub fn needs_update(last: &Option<ServerInfoSnapshot>, current: &ServerInfoSnapshot) -> bool {
+    last.as_ref() != Some(current)
+}
+
+#[macro_export]
+macro_rules! apply_server_info {
+    ($window:expr, $info:expr) => {{
+        let s = $info;
+        $window.set_server_info_summary(s.summary.as_str().into());
+        $window.set_server_info_model(s.model.as_str().into());
+        $window.set_server_info_engine(s.engine.as_str().into());
+        $window.set_server_info_gpu(s.gpu.as_str().into());
+        $window.set_server_info_memory(s.memory.as_str().into());
+        $window.set_server_info_server(s.server.as_str().into());
+    }};
+}
+
+fn summary(s: &ServerStartEvent) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(gpu) = &s.environment.gpu_name {
+        parts.push(gpu.clone());
+    }
+    if let Some(model) = model_id(s) {
+        parts.push(model);
+    }
+    let kv = kv_label(s);
+    if !kv.is_empty() {
+        parts.push(kv);
+    }
+    if let Some(free) = s.memory.available_after_weights_bytes {
+        parts.push(format!("{} free", fmt_bytes(free)));
+    }
+    join_or_no_data(parts)
+}
+
+/// The display model id: `server.public_model_id`, then
+/// `engine.public_model_id`, then `engine.model_id`, then
+/// `artifact.target` + `artifact.weights_id`.
+fn model_id(s: &ServerStartEvent) -> Option<String> {
+    s.server
+        .public_model_id
+        .clone()
+        .or_else(|| s.engine.public_model_id.clone())
+        .or_else(|| s.engine.model_id.clone())
+        .or_else(|| match (&s.artifact.target, &s.artifact.weights_id) {
+            (Some(target), Some(weights_id)) => Some(format!("{target}-{weights_id}")),
+            _ => None,
+        })
+}
+
+fn kv_label(s: &ServerStartEvent) -> String {
+    match (&s.engine.kv_cache, s.engine.kv_capacity) {
+        (Some(cache), Some(capacity)) => format!("KV {cache} {}", fmt_int(capacity)),
+        (None, Some(capacity)) => format!("KV {}", fmt_int(capacity)),
+        (Some(cache), None) => format!("KV {cache}"),
+        (None, None) => String::new(),
+    }
+}
+
+fn model_line(s: &ServerStartEvent) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(target) = &s.artifact.target {
+        parts.push(match &s.artifact.weights_id {
+            Some(weights_id) => format!("{target} ({weights_id})"),
+            None => target.clone(),
+        });
+    }
+    if let Some(size) = s.artifact.size_bytes {
+        parts.push(fmt_bytes(size));
+    }
+    if let Some(load) = s.artifact.load_seconds {
+        parts.push(format!("load {} s", fmt_seconds(load)));
+    }
+    if let Some(upload) = s.artifact.upload_seconds {
+        parts.push(format!("upload {} s", fmt_seconds(upload)));
+    }
+    join_or_no_data(parts)
+}
+
+fn engine_line(s: &ServerStartEvent) -> String {
+    let e = &s.engine;
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(id) = e.public_model_id.clone().or_else(|| e.model_id.clone()) {
+        parts.push(id);
+    }
+    if let Some(cache) = &e.kv_cache {
+        parts.push(format!("KV {cache}"));
+    }
+    if let Some(capacity) = e.kv_capacity {
+        parts.push(format!("capacity {}", fmt_int(capacity)));
+    }
+    if let Some(max_context) = e.max_context {
+        parts.push(format!("max context {}", fmt_int(max_context)));
+    }
+    if let Some(concurrency) = e.max_concurrency {
+        parts.push(format!("concurrency {concurrency}"));
+    }
+    if let Some(chunk) = e.prefill_chunk {
+        parts.push(format!("prefill chunk {}", fmt_int(chunk)));
+    }
+    if let Some(spec) = &e.speculative_backend {
+        parts.push(format!("spec {spec}"));
+    }
+    if let Some(cuda_graph) = e.cuda_graph {
+        parts.push(format!("cuda graph {}", bool_str(cuda_graph)));
+    }
+    if let Some(prefix_reuse) = e.prefix_reuse {
+        parts.push(format!("prefix reuse {}", bool_str(prefix_reuse)));
+    }
+    join_or_no_data(parts)
+}
+
+// TODO: display `environment.cuda_compile_version` (parsed but unused).
+fn gpu_line(s: &ServerStartEvent) -> String {
+    let env = &s.environment;
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(gpu) = &env.gpu_name {
+        parts.push(gpu.clone());
+    }
+    match (env.compute_capability_major, env.compute_capability_minor) {
+        (Some(major), Some(minor)) => parts.push(format!("SM {major}.{minor}")),
+        (Some(major), None) => parts.push(format!("SM {major}")),
+        (None, _) => {}
+    }
+    if let Some(driver) = &env.cuda_driver_version {
+        parts.push(format!("CUDA driver {driver}"));
+    }
+    if let Some(runtime) = &env.cuda_runtime_version {
+        parts.push(format!("runtime {runtime}"));
+    }
+    if let Some(memory) = env.total_device_memory_bytes {
+        parts.push(fmt_bytes(memory));
+    }
+    join_or_no_data(parts)
+}
+
+// TODO: display `memory.host_kv_capacity_bytes` and
+// `MemorySegment.peak_used_bytes` (parsed but unused).
+fn memory_line(s: &ServerStartEvent) -> String {
+    let m = &s.memory;
+    let mut parts: Vec<String> = Vec::new();
+    if m.weights.used_bytes.is_some() || m.weights.capacity_bytes.is_some() {
+        parts.push(format!("weights {}", segment(&m.weights)));
+    }
+    if m.sequence.used_bytes.is_some() || m.sequence.capacity_bytes.is_some() {
+        parts.push(format!("KV {}", segment(&m.sequence)));
+    }
+    if m.workspace.used_bytes.is_some() || m.workspace.capacity_bytes.is_some() {
+        parts.push(format!("workspace {}", segment(&m.workspace)));
+    }
+    if let Some(free) = m.available_after_weights_bytes {
+        parts.push(format!("{} free", fmt_bytes(free)));
+    }
+    join_or_no_data(parts)
+}
+
+fn segment(seg: &MemorySegment) -> String {
+    let used = seg
+        .used_bytes
+        .map(fmt_gib)
+        .unwrap_or_else(|| NO_DATA.to_owned());
+    let capacity = seg
+        .capacity_bytes
+        .map(fmt_gib)
+        .unwrap_or_else(|| NO_DATA.to_owned());
+    format!("{used}/{capacity} GiB")
+}
+
+fn server_line(s: &ServerStartEvent) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let host_port = match (&s.server.host, s.server.port) {
+        (Some(host), Some(port)) => Some(format!("{host}:{port}")),
+        (Some(host), None) => Some(host.clone()),
+        (None, Some(port)) => Some(port.to_string()),
+        (None, None) => None,
+    };
+    if let Some(host_port) = host_port {
+        parts.push(host_port);
+    }
+    if let Some(id) = &s.server_instance_id {
+        parts.push(id.clone());
+    }
+    if let Some(log) = &s.server.request_log_jsonl {
+        parts.push(format!("log {log}"));
+    }
+    join_or_no_data(parts)
+}
+
+fn join_or_no_data(parts: Vec<String>) -> String {
+    if parts.is_empty() {
+        NO_DATA.to_owned()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+/// `240000` -> `240 000` (space thousands separator, PRD M10 reference values).
+fn fmt_int(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Bytes as GiB (2^30) with one decimal place.
+fn fmt_bytes(value: u64) -> String {
+    format!("{} GiB", fmt_gib(value))
+}
+
+fn fmt_gib(value: u64) -> String {
+    format!("{:.1}", value as f64 / 1073741824.0)
+}
+
+fn fmt_seconds(value: f64) -> String {
+    format!("{value:.1}")
+}
+
+fn bool_str(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::{ParsedEvent, parse_line};
+
+    fn sample_store() -> Store {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/server.requests.jsonl");
+        Store::load_jsonl(path).expect("read sample log")
+    }
+
+    fn server_start_line(ts: u64, body: &str) -> ParsedEvent {
+        let raw = if body.is_empty() {
+            format!(
+                r#"{{"artifact_type":"ninfer_serve_request_log","schema_version":20,"server_instance_id":"s","timestamp_unix_ms":{ts},"event":"server_start"}}"#
+            )
+        } else {
+            format!(
+                r#"{{"artifact_type":"ninfer_serve_request_log","schema_version":20,"server_instance_id":"s","timestamp_unix_ms":{ts},"event":"server_start",{body}}}"#
+            )
+        };
+        parse_line(raw.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn empty_store_snapshot_shows_no_data() {
+        let s = snapshot(&Store::new());
+        assert_eq!(s.summary, "No server info yet");
+        assert_eq!(s.model, NO_DATA);
+        assert_eq!(s.engine, NO_DATA);
+        assert_eq!(s.gpu, NO_DATA);
+        assert_eq!(s.memory, NO_DATA);
+        assert_eq!(s.server, NO_DATA);
+    }
+
+    #[test]
+    fn sample_log_snapshot_matches_prd_reference_values() {
+        let s = snapshot(&sample_store());
+        assert_eq!(
+            s.summary,
+            "NVIDIA GeForce RTX 5090 · qwen3.8-27b-nvfp4 · KV fp8-e4m3-row256 240 000 · 10.5 GiB free"
+        );
+        assert_eq!(
+            s.model,
+            "qwen3_8_27b (nvfp4) · 22.1 GiB · load 9.7 s · upload 6.8 s"
+        );
+        assert_eq!(
+            s.engine,
+            "KV fp8-e4m3-row256 · capacity 240 000 · max context 240 000 · concurrency 2 · prefill chunk 2 048 · spec mtp · cuda graph on · prefix reuse on"
+        );
+        assert_eq!(
+            s.gpu,
+            "NVIDIA GeForce RTX 5090 · SM 12.0 · CUDA driver 13.4 · runtime 13.4 · 31.8 GiB"
+        );
+        assert_eq!(
+            s.memory,
+            "weights 19.7/19.7 GiB · KV 8.5/8.5 GiB · workspace 0.0/0.3 GiB · 10.5 GiB free"
+        );
+        assert_eq!(
+            s.server,
+            "0.0.0.0:8080 · serve-27872-1789281769048204 · log d:/NInfer/logs/server.requests.jsonl"
+        );
+    }
+
+    #[test]
+    fn snapshot_updates_on_restart() {
+        let mut store = sample_store();
+        let ts = store.max_timestamp_ms().expect("last timestamp") + 1_000;
+        let raw = format!(
+            r#"{{"artifact_type":"ninfer_serve_request_log","schema_version":20,"server_instance_id":"serve-2","timestamp_unix_ms":{ts},"event":"server_start","engine":{{"kv_cache":"bf16","kv_capacity":120000,"max_context":120000,"max_concurrency":4}},"environment":{{"gpu_name":"NVIDIA GeForce RTX 4090"}},"memory":{{"available_after_weights_bytes":8589934592}},"server":{{"public_model_id":"qwen3.8-27b-fp8"}}}}"#
+        );
+        store.apply(&parse_line(raw.as_bytes()).unwrap());
+        let s = snapshot(&store);
+        assert_eq!(
+            s.summary,
+            "NVIDIA GeForce RTX 4090 · qwen3.8-27b-fp8 · KV bf16 120 000 · 8.0 GiB free"
+        );
+        assert_eq!(
+            s.engine,
+            "KV bf16 · capacity 120 000 · max context 120 000 · concurrency 4"
+        );
+        assert_eq!(s.gpu, "NVIDIA GeForce RTX 4090");
+        assert_eq!(s.memory, "8.0 GiB free");
+        assert_eq!(s.server, "serve-2");
+        assert_eq!(s.model, NO_DATA);
+    }
+
+    #[test]
+    fn model_id_prefers_server_public_model_id() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""engine":{"public_model_id":"b","model_id":"c"},"artifact":{"target":"d","weights_id":"e"},"server":{"public_model_id":"a"}"#,
+        ));
+        let s = snapshot(&store);
+        assert_eq!(s.summary, "a", "server.public_model_id must win");
+    }
+
+    #[test]
+    fn model_id_prefers_engine_public_model_id() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""engine":{"public_model_id":"b","model_id":"c"},"artifact":{"target":"d","weights_id":"e"}"#,
+        ));
+        let s = snapshot(&store);
+        assert_eq!(s.summary, "b", "engine.public_model_id must win");
+    }
+
+    #[test]
+    fn model_id_falls_back_to_engine_model_id() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""engine":{"model_id":"c"},"artifact":{"target":"d","weights_id":"e"}"#,
+        ));
+        let s = snapshot(&store);
+        assert_eq!(
+            s.summary, "c",
+            "engine.model_id must win over artifact.target"
+        );
+    }
+
+    #[test]
+    fn model_id_falls_back_to_target_and_weights_id() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""artifact":{"target":"d","weights_id":"e"}"#,
+        ));
+        let s = snapshot(&store);
+        assert!(s.summary.contains("d-e"), "summary: {}", s.summary);
+    }
+
+    #[test]
+    fn minimal_server_start_shows_no_data_lines() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(1_000, ""));
+        let s = snapshot(&store);
+        assert_eq!(s.summary, NO_DATA);
+        assert_eq!(s.model, NO_DATA);
+        assert_eq!(s.engine, NO_DATA);
+        assert_eq!(s.gpu, NO_DATA);
+        assert_eq!(s.memory, NO_DATA);
+        assert_eq!(s.server, "s");
+    }
+
+    #[test]
+    fn fmt_int_groups_thousands_with_spaces() {
+        assert_eq!(fmt_int(2), "2");
+        assert_eq!(fmt_int(2048), "2 048");
+        assert_eq!(fmt_int(240000), "240 000");
+        assert_eq!(fmt_int(1000000), "1 000 000");
+    }
+
+    #[test]
+    fn fmt_gib_one_decimal() {
+        assert_eq!(fmt_gib(23719496192), "22.1");
+        assert_eq!(fmt_gib(9080226048), "8.5");
+        assert_eq!(fmt_gib(319963136), "0.3");
+        assert_eq!(fmt_gib(0), "0.0");
+    }
+
+    #[test]
+    fn fmt_bytes_uses_gib_unit() {
+        assert_eq!(fmt_bytes(1073741824), "1.0 GiB");
+        assert_eq!(fmt_bytes(11310989312), "10.5 GiB");
+        assert_eq!(fmt_bytes(0), "0.0 GiB");
+    }
+
+    #[test]
+    fn needs_update_on_first_snapshot() {
+        let s = snapshot(&Store::new());
+        assert!(needs_update(&None, &s));
+    }
+
+    #[test]
+    fn needs_update_false_when_unchanged() {
+        let s = snapshot(&Store::new());
+        assert!(!needs_update(&Some(s.clone()), &s));
+    }
+
+    #[test]
+    fn needs_update_true_when_changed() {
+        let mut store = Store::new();
+        let before = snapshot(&store);
+        store.apply(&server_start_line(
+            1_000,
+            r#""engine":{"kv_capacity":240000}"#,
+        ));
+        let after = snapshot(&store);
+        assert!(needs_update(&Some(before.clone()), &after));
+    }
+
+    #[test]
+    fn needs_update_true_after_store_reset() {
+        let store = sample_store();
+        let live = snapshot(&store);
+        let cleared = snapshot(&Store::new());
+        assert!(
+            needs_update(&Some(live.clone()), &cleared),
+            "a cleared store must re-apply the empty panel state"
+        );
+    }
+
+    #[test]
+    fn gpu_line_compute_capability_major_only() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""environment":{"gpu_name":"G","compute_capability_major":9}"#,
+        ));
+        assert_eq!(snapshot(&store).gpu, "G · SM 9");
+    }
+
+    #[test]
+    fn server_line_host_without_port() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(1_000, r#""server":{"host":"10.0.0.5"}"#));
+        assert_eq!(snapshot(&store).server, "10.0.0.5 · s");
+    }
+
+    #[test]
+    fn server_line_port_without_host() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(1_000, r#""server":{"port":9090}"#));
+        assert_eq!(snapshot(&store).server, "9090 · s");
+    }
+
+    #[test]
+    fn engine_line_bools_off() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""engine":{"cuda_graph":false,"prefix_reuse":false}"#,
+        ));
+        assert_eq!(snapshot(&store).engine, "cuda graph off · prefix reuse off");
+    }
+
+    #[test]
+    fn memory_line_partial_segment_shows_no_data_used() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""memory":{"weights":{"capacity_bytes":8589934592}}"#,
+        ));
+        assert_eq!(snapshot(&store).memory, "weights —/8.0 GiB");
+    }
+
+    #[test]
+    fn model_line_target_without_weights_id() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(1_000, r#""artifact":{"target":"d"}"#));
+        assert_eq!(snapshot(&store).model, "d");
+    }
+
+    #[test]
+    fn summary_kv_cache_only() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(1_000, r#""engine":{"kv_cache":"bf16"}"#));
+        assert_eq!(snapshot(&store).summary, "KV bf16");
+    }
+
+    #[test]
+    fn summary_kv_capacity_only() {
+        let mut store = Store::new();
+        store.apply(&server_start_line(
+            1_000,
+            r#""engine":{"kv_capacity":120000}"#,
+        ));
+        assert_eq!(snapshot(&store).summary, "KV 120 000");
+    }
+}

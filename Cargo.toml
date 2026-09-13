@@ -1,0 +1,43 @@
+[package]
+name = "ninfer-monitor"
+version = "0.1.0"
+edition = "2024"
+description = "Real-time dashboard for the NInfer server request log (server.requests.jsonl)"
+
+[package.metadata.packager]
+before-packaging-command = "cargo build --release"
+product-name = "NInfer Monitor"
+identifier = "com.nofatsoft.ninfer-monitor"
+binaries-dir = "target/release"
+out-dir = "target/packager"
+formats = ["nsis"]
+
+# Configuration specifically for the NSIS (.exe) installer
+[package.metadata.packager.nsis]
+installer-mode = "perMachine"
+installer-icon = "src/ui/icons/app_icon.ico"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+plotters = "0.3.7"
+rfd = "0.17"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+slint = "1.17.1"
+thiserror = "2.0.20"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
+
+[build-dependencies]
+slint-build = "1.17.1"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+[dev-dependencies]
+i-slint-backend-testing = { version = "1.17.1", features = ["ffi", "renderer-software"] }
+i-slint-core = "1.17.1"
+png = "0.18"
+tempfile = "3.20.0"
