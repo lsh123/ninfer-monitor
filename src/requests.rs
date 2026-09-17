@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use crate::chart::format_time_ms;
-use crate::parser::{EngineTiming, SamplingParams, Speculative, ToolCallParse};
+use crate::parser::{EngineTiming, Materialization, SamplingParams, Speculative, ToolCallParse};
 use crate::store::{RequestState, RequestStatus, Store};
 
 /// Row colors (FR-5.3).
@@ -54,6 +54,9 @@ pub struct RequestDetail {
     pub speculative: String,
     pub tool_call: String,
     pub prefix: String,
+    /// KV-cache materialization diagnostics, empty when the request ran
+    /// without KV pressure (the line is then hidden).
+    pub materialization: String,
     pub error: String,
 }
 
@@ -68,6 +71,7 @@ impl RequestDetail {
             speculative: String::new(),
             tool_call: String::new(),
             prefix: String::new(),
+            materialization: String::new(),
             error: String::new(),
         }
     }
@@ -91,9 +95,9 @@ pub fn toggle_expanded(expanded_ids: &mut HashSet<u64>, id: u64) {
 }
 
 /// Height of an expanded row's inline detail block (FR-5.4): the padding, the
-/// fixed five lines, and the optional error line.
-pub fn detail_block_height(has_error: bool) -> u32 {
-    let lines = 5 + u32::from(has_error);
+/// fixed five lines, and the optional materialization and error lines.
+pub fn detail_block_height(has_materialization: bool, has_error: bool) -> u32 {
+    let lines = 5 + u32::from(has_materialization) + u32::from(has_error);
     DETAIL_PADDING_PX + lines * DETAIL_LINE_PX + (lines - 1) * DETAIL_SPACING_PX
 }
 
@@ -107,7 +111,10 @@ pub fn table_content_height(rows: &[TableRowData]) -> u32 {
     }
     for r in rows {
         if r.expanded {
-            height += detail_block_height(!r.detail.error.is_empty());
+            height += detail_block_height(
+                !r.detail.materialization.is_empty(),
+                !r.detail.error.is_empty(),
+            );
         }
     }
     height
@@ -141,6 +148,9 @@ fn detail_for(s: &RequestState) -> RequestDetail {
             .and_then(|d| d.result.prefix_reuse_path.as_deref())
             .map(str::to_owned)
             .unwrap_or_else(|| NO_DATA.to_owned()),
+        materialization: done
+            .map(|d| format_materialization(&d.materialization))
+            .unwrap_or_default(),
         error: s
             .error
             .as_ref()
@@ -283,6 +293,31 @@ fn format_speculative(s: &Speculative) -> String {
     ])
 }
 
+/// The materialization line: only the pressure-related fields, empty (line
+/// hidden) when the request ran without KV pressure.
+fn format_materialization(m: &Materialization) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(stop) = m.stop_reason.as_deref().filter(|s| *s != "no_pressure") {
+        parts.push(format!("stop {stop}"));
+    }
+    if m.budget_exhausted == Some(true) {
+        parts.push("budget exhausted".to_owned());
+    }
+    if let Some(n) = m.selected_degradation_units.filter(|&n| n > 0) {
+        parts.push(format!("degraded {n}"));
+    }
+    if m.selected_maximal_fallback == Some(true) {
+        parts.push("maximal fallback".to_owned());
+    }
+    if let Some(phase) = m.search_stop_phase.as_deref().filter(|s| *s != "none") {
+        parts.push(format!("search {phase}"));
+    }
+    if m.search_boundary_limited == Some(true) {
+        parts.push("boundary limited".to_owned());
+    }
+    parts.join(" · ")
+}
+
 fn format_tool_call(t: &ToolCallParse) -> String {
     join_pairs(&[
         ("structured", t.structured_call_count.map(|v| v.to_string())),
@@ -332,6 +367,13 @@ mod tests {
     fn start_line(ts: u64, id: u64) -> ParsedEvent {
         let raw = format!(
             r#"{{"artifact_type":"ninfer_serve_request_log","schema_version":20,"server_instance_id":"s","timestamp_unix_ms":{ts},"event":"request_start","request":{{"request_id":{id},"model":"m","sampling":{{"temperature":0.1,"top_k":20,"top_p":0.95,"seed":7}}}}}}"#
+        );
+        parse_line(raw.as_bytes()).unwrap()
+    }
+
+    fn done_materialized_line(ts: u64, id: u64) -> ParsedEvent {
+        let raw = format!(
+            r#"{{"artifact_type":"ninfer_serve_request_log","schema_version":21,"server_instance_id":"s","timestamp_unix_ms":{ts},"event":"request_done","request":{{"request_id":{id}}},"result":{{"finish_reason":"stop_token"}},"timings_seconds":{{"total":1.5}},"materialization":{{"stop_reason":"time_budget","budget_exhausted":true,"selected_degradation_units":2,"selected_maximal_fallback":true,"search_stop_phase":"refinement","search_boundary_limited":true}}}}"#
         );
         parse_line(raw.as_bytes()).unwrap()
     }
@@ -538,9 +580,33 @@ mod tests {
     }
 
     #[test]
-    fn detail_block_height_with_and_without_error() {
-        assert_eq!(detail_block_height(false), 112);
-        assert_eq!(detail_block_height(true), 132);
+    fn detail_shows_materialization_when_under_pressure() {
+        let mut store = Store::new();
+        store.apply(&start_line(1_000, 1));
+        store.apply(&done_materialized_line(2_000, 1));
+        let d = detail_for(store.request(1).unwrap());
+        assert_eq!(
+            d.materialization,
+            "stop time_budget · budget exhausted · degraded 2 · maximal fallback \
+             · search refinement · boundary limited"
+        );
+    }
+
+    #[test]
+    fn detail_hides_materialization_without_pressure() {
+        let mut store = Store::new();
+        store.apply(&start_line(1_000, 1));
+        store.apply(&done_line(2_000, 1, 1.5));
+        let d = detail_for(store.request(1).unwrap());
+        assert!(d.materialization.is_empty());
+    }
+
+    #[test]
+    fn detail_block_height_with_optional_lines() {
+        assert_eq!(detail_block_height(false, false), 112);
+        assert_eq!(detail_block_height(true, false), 132);
+        assert_eq!(detail_block_height(false, true), 132);
+        assert_eq!(detail_block_height(true, true), 152);
     }
 
     #[test]
@@ -557,7 +623,7 @@ mod tests {
         let expanded = table_rows(&store, &ids);
         assert_eq!(
             table_content_height(&expanded),
-            2 * 32 + 4 + detail_block_height(false)
+            2 * 32 + 4 + detail_block_height(false, false)
         );
     }
 }

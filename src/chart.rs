@@ -4,8 +4,6 @@
 //
 // Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
 
-use std::hash::{Hash, Hasher};
-
 use chrono::{DateTime, Local, Utc};
 use plotters::element::PathElement;
 use plotters::prelude::*;
@@ -37,17 +35,23 @@ const LEFT_LINE: [u8; 3] = [0xff, 0xb7, 0x4d];
 /// Line color of the right-axis series (blue), unified across all charts.
 const RIGHT_LINE: [u8; 3] = [0x4f, 0xc3, 0xf7];
 
+/// Dash and gap lengths of the stale-series tail (M5), in pixels.
+const DASH_PX: u32 = 8;
+const GAP_PX: u32 = 6;
+
 fn rgb(c: [u8; 3]) -> RGBColor {
     RGBColor(c[0], c[1], c[2])
 }
 
-/// The four required charts (FR-4.2).
+/// The required charts (FR-4.2) plus the per-GPU charts (M4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChartKind {
     Throughput,
     Latency,
     Cache,
     Scheduler,
+    GpuUsage,
+    GpuTemp,
 }
 
 /// One time series: `(timestamp_ms, value)` points, oldest first.
@@ -127,7 +131,13 @@ fn cache_spec_series(records: &[&WindowRecord], window_ms: u64) -> (PointSeries,
 
 /// Extract the chart series for `kind` from the store, filtered to the
 /// `[last - window_ms, last]` time window (FR-4.2, R4: timestamp-driven).
-pub fn prepare(store: &Store, kind: ChartKind, window_ms: u64) -> ChartData {
+///
+/// The domain's right edge is the current time (`now_ms`, M5) rather than the
+/// last received point, so a stale series can be extended with a dashed tail
+/// up to the right edge. When `now_ms` is not later than the last received
+/// point (fresh data, or clock skew), the domain end is the last point and no
+/// tail is drawn.
+pub fn prepare(store: &Store, kind: ChartKind, window_ms: u64, now_ms: u64) -> ChartData {
     let Some(t_end) = store.max_timestamp_ms() else {
         return ChartData {
             kind,
@@ -138,7 +148,8 @@ pub fn prepare(store: &Store, kind: ChartKind, window_ms: u64) -> ChartData {
     };
     let t_end = t_end as f64;
     let t_start = (t_end - window_ms as f64).max(0.0);
-    let in_window = |ts: u64| (ts as f64) >= t_start && (ts as f64) <= t_end;
+    let t1 = t_end.max(now_ms as f64);
+    let in_window = |ts: u64| (ts as f64) >= t_start && (ts as f64) <= t1;
     let restarts = store
         .restarts()
         .iter()
@@ -146,7 +157,7 @@ pub fn prepare(store: &Store, kind: ChartKind, window_ms: u64) -> ChartData {
         .filter(|ts| in_window(*ts))
         .map(|ts| ts as f64)
         .collect();
-    let domain = (t_start, t_end);
+    let domain = (t_start, t1);
     let mut series = match kind {
         ChartKind::Throughput => {
             let mut prefill = Vec::new();
@@ -268,6 +279,9 @@ pub fn prepare(store: &Store, kind: ChartKind, window_ms: u64) -> ChartData {
                 },
             ]
         }
+        // The GPU charts are prepared from the GPU history (M4), not the
+        // store, so the store-based `prepare` yields no points for them.
+        ChartKind::GpuUsage | ChartKind::GpuTemp => Vec::new(),
     };
     // Points are collected in arrival order; sort by timestamp so line
     // series draw left-to-right even if events arrive out of order.
@@ -406,6 +420,34 @@ fn render_dual(data: &ChartData, size: (u32, u32)) -> Vec<u8> {
             .unwrap();
 
         let (t0, t1) = data.domain;
+        // M5: a series whose last received point is older than the right
+        // edge (the current time) is extended with a dashed horizontal line
+        // to the right edge. When a new value arrives, the last point moves
+        // to the right edge and the dashed segment disappears.
+        if let Some(&(tl, vl)) = left.points.last()
+            && tl < t1
+        {
+            chart
+                .draw_series(DashedLineSeries::new(
+                    [(tl, vl), (t1, vl)],
+                    DASH_PX,
+                    GAP_PX,
+                    line_style(LEFT_LINE),
+                ))
+                .unwrap();
+        }
+        if let Some(&(tr, vr)) = right.points.last()
+            && tr < t1
+        {
+            chart
+                .draw_secondary_series(DashedLineSeries::new(
+                    [(tr, vr), (t1, vr)],
+                    DASH_PX,
+                    GAP_PX,
+                    line_style(RIGHT_LINE),
+                ))
+                .unwrap();
+        }
         for ts in &data.restarts {
             chart
                 .plotting_area()
@@ -442,20 +484,27 @@ pub fn render(data: &ChartData, size: (u32, u32)) -> Vec<u8> {
     render_dual(data, size)
 }
 
-fn to_image(rgb: &[u8], size: (u32, u32)) -> slint::Image {
+/// Convert an RGB buffer into a slint image (M4: shared by the GPU charts).
+pub fn to_image(rgb: &[u8], size: (u32, u32)) -> slint::Image {
     let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(size.0, size.1);
     buf.make_mut_bytes().copy_from_slice(rgb);
     slint::Image::from_rgb8(buf)
 }
 
 /// Render all four charts for the store within `window_ms`, each at its own
-/// panel size (FR-4.2).
-pub fn render_all_sized(store: &Store, window_ms: u64, sizes: &[(u32, u32); 4]) -> ChartImages {
+/// panel size (FR-4.2). `now_ms` is the current time, the charts' right edge
+/// (M5).
+pub fn render_all_sized(
+    store: &Store,
+    window_ms: u64,
+    sizes: &[(u32, u32); 4],
+    now_ms: u64,
+) -> ChartImages {
     let data = [
-        prepare(store, ChartKind::Throughput, window_ms),
-        prepare(store, ChartKind::Latency, window_ms),
-        prepare(store, ChartKind::Cache, window_ms),
-        prepare(store, ChartKind::Scheduler, window_ms),
+        prepare(store, ChartKind::Throughput, window_ms, now_ms),
+        prepare(store, ChartKind::Latency, window_ms, now_ms),
+        prepare(store, ChartKind::Cache, window_ms, now_ms),
+        prepare(store, ChartKind::Scheduler, window_ms, now_ms),
     ];
     let rendered = [
         render(&data[0], sizes[0]),
@@ -469,47 +518,6 @@ pub fn render_all_sized(store: &Store, window_ms: u64, sizes: &[(u32, u32); 4]) 
         cache: to_image(&rendered[2], sizes[2]),
         scheduler: to_image(&rendered[3], sizes[3]),
     }
-}
-
-/// Fingerprint of the chart-relevant store state, used to skip re-renders
-/// when nothing changed (FR-4.1: re-render only on data change).
-///
-/// Hashes the length, oldest point, and newest point of each series plus the
-/// domain end, so a change is detected even when a buffer is full and the
-/// newest timestamp does not advance.
-pub fn fingerprint(store: &Store) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    store.max_timestamp_ms().hash(&mut h);
-    let throughput = store.throughput();
-    throughput.len().hash(&mut h);
-    for s in [throughput.first(), throughput.last()]
-        .into_iter()
-        .flatten()
-    {
-        s.timestamp_ms.hash(&mut h);
-        s.decode_tps.map(|v| v.to_bits()).hash(&mut h);
-        s.prefill_tps.map(|v| v.to_bits()).hash(&mut h);
-        s.scheduler_running.hash(&mut h);
-        s.scheduler_waiting.hash(&mut h);
-    }
-    let latency = store.latency_points();
-    latency.len().hash(&mut h);
-    for p in [latency.first(), latency.last()].into_iter().flatten() {
-        p.timestamp_ms.hash(&mut h);
-        p.ttft_ms.map(|v| v.to_bits()).hash(&mut h);
-        p.decode_latency_ms.map(|v| v.to_bits()).hash(&mut h);
-    }
-    let records = store.request_records();
-    records.len().hash(&mut h);
-    for r in [records.first(), records.last()].into_iter().flatten() {
-        r.ts.hash(&mut h);
-        r.prompt_tokens.hash(&mut h);
-        r.prefix_cache_hit_tokens.hash(&mut h);
-        r.drafted_tokens.hash(&mut h);
-        r.accepted_tokens.hash(&mut h);
-    }
-    store.restarts().hash(&mut h);
-    h.finish()
 }
 
 #[macro_export]
@@ -561,7 +569,7 @@ mod tests {
             ChartKind::Cache,
             ChartKind::Scheduler,
         ] {
-            let data = prepare(&store, kind, 300_000);
+            let data = prepare(&store, kind, 300_000, 0);
             assert!(data.series.iter().all(|s| s.points.is_empty()));
         }
     }
@@ -572,7 +580,7 @@ mod tests {
         store.apply(&throughput_line(0, 1.0, 2.0));
         store.apply(&throughput_line(100_000, 3.0, 4.0));
         store.apply(&throughput_line(200_000, 5.0, 6.0));
-        let data = prepare(&store, ChartKind::Throughput, 150_000);
+        let data = prepare(&store, ChartKind::Throughput, 150_000, 200_000);
         // Window [50_000, 200_000]: keeps ts=100_000 and ts=200_000.
         assert_eq!(data.series[0].points.len(), 2);
         assert_eq!(data.domain, (50_000.0, 200_000.0));
@@ -583,7 +591,7 @@ mod tests {
         let mut store = Store::new();
         // ttft = 0.5 s -> 500 ms; decode = 1.0 s over 10 tokens -> 100 ms/token.
         store.apply(&request_done_line(1_000, 1, 0.5, 1.0, 10, 100, 25, 10, 5));
-        let data = prepare(&store, ChartKind::Latency, 300_000);
+        let data = prepare(&store, ChartKind::Latency, 300_000, 1_000);
         assert_eq!(data.series.len(), 2);
         assert_eq!(data.series[0].name, "ttft");
         assert_eq!(data.series[0].points, vec![(1_000.0, 500.0)]);
@@ -597,7 +605,7 @@ mod tests {
         // prompt 100, hit 25 -> 25% cache hit; drafted 10, accepted 5 -> 50% spec.
         store.apply(&request_done_line(1_000, 1, 0.5, 1.0, 10, 100, 25, 10, 5));
         store.apply(&request_done_line(2_000, 2, 0.5, 1.0, 10, 100, 25, 10, 5));
-        let data = prepare(&store, ChartKind::Cache, 300_000);
+        let data = prepare(&store, ChartKind::Cache, 300_000, 2_000);
         assert_eq!(data.series.len(), 2);
         assert_eq!(data.series[0].name, "cache hit");
         assert_eq!(
@@ -620,7 +628,7 @@ mod tests {
         store.apply(&request_done_line(101_000, 2, 0.5, 1.0, 10, 100, 50, 10, 5));
         // A wide chart window keeps both points, but the second point's rate
         // must still be 50% (its own 60 s window), not 37.5% (both requests).
-        let data = prepare(&store, ChartKind::Cache, 300_000);
+        let data = prepare(&store, ChartKind::Cache, 300_000, 101_000);
         assert_eq!(
             data.series[0].points,
             vec![(1_000.0, 25.0), (101_000.0, 50.0)]
@@ -632,7 +640,7 @@ mod tests {
         let mut store = Store::new();
         // decode = 2.0 s over 20 completion tokens -> 100 ms/token.
         store.apply(&request_done_line(1_000, 1, 0.5, 2.0, 20, 100, 25, 10, 5));
-        let data = prepare(&store, ChartKind::Latency, 300_000);
+        let data = prepare(&store, ChartKind::Latency, 300_000, 1_000);
         assert_eq!(data.series[1].name, "per-token");
         assert_eq!(data.series[1].points, vec![(1_000.0, 100.0)]);
     }
@@ -641,7 +649,7 @@ mod tests {
     fn scheduler_chart_has_active_and_waiting() {
         let mut store = Store::new();
         store.apply(&throughput_line(1_000, 1.0, 2.0));
-        let data = prepare(&store, ChartKind::Scheduler, 300_000);
+        let data = prepare(&store, ChartKind::Scheduler, 300_000, 1_000);
         assert_eq!(data.series.len(), 2);
         assert_eq!(data.series[0].name, "active");
         assert_eq!(data.series[0].points, vec![(1_000.0, 1.0)]);
@@ -663,7 +671,7 @@ mod tests {
             ChartKind::Cache,
             ChartKind::Scheduler,
         ] {
-            let data = prepare(&store, kind, 3_600_000);
+            let data = prepare(&store, kind, 3_600_000, 4_995_000);
             let start = std::time::Instant::now();
             let _ = render(&data, (CHART_WIDTH, CHART_HEIGHT));
             let elapsed = start.elapsed();
@@ -677,58 +685,9 @@ mod tests {
     #[test]
     fn render_empty_draws_no_data() {
         let store = Store::new();
-        let data = prepare(&store, ChartKind::Throughput, 300_000);
+        let data = prepare(&store, ChartKind::Throughput, 300_000, 0);
         let rendered = render(&data, (CHART_WIDTH, CHART_HEIGHT));
         assert_eq!(rendered.len(), buf_bytes((CHART_WIDTH, CHART_HEIGHT)));
-    }
-
-    #[test]
-    fn fingerprint_is_deterministic_and_changes_on_data() {
-        let mut store = Store::new();
-        let f0 = fingerprint(&store);
-        assert_eq!(f0, fingerprint(&store), "fingerprint must be deterministic");
-        store.apply(&throughput_line(1_000, 1.0, 2.0));
-        let f1 = fingerprint(&store);
-        assert_ne!(f0, f1, "fingerprint must change when data changes");
-        assert_eq!(f1, fingerprint(&store));
-        store.apply(&throughput_line(2_000, 3.0, 4.0));
-        assert_ne!(f1, fingerprint(&store));
-    }
-
-    #[test]
-    fn fingerprint_changes_when_buffer_full_and_ts_does_not_advance() {
-        let mut store = Store::new();
-        // Fill the throughput ring buffer to capacity.
-        for ts in 0..crate::metrics::MAX_SERIES_POINTS {
-            store.apply(&throughput_line(ts as u64, 1.0, 2.0));
-        }
-        let before = fingerprint(&store);
-        // A new point with the same (max) timestamp evicts the oldest; the
-        // fingerprint must still change even though max_timestamp_ms is
-        // unchanged.
-        let max_ts = crate::metrics::MAX_SERIES_POINTS as u64 - 1;
-        store.apply(&throughput_line(max_ts, 9.0, 9.0));
-        assert_ne!(before, fingerprint(&store));
-    }
-
-    #[test]
-    fn fingerprint_changes_when_duplicated_newest_point_evicts_oldest() {
-        let mut store = Store::new();
-        for ts in 0..crate::metrics::MAX_SERIES_POINTS {
-            store.apply(&throughput_line(ts as u64, 1.0, 2.0));
-        }
-        let before = fingerprint(&store);
-        let max_ts = crate::metrics::MAX_SERIES_POINTS as u64 - 1;
-        store.apply(&throughput_line(max_ts, 1.0, 2.0));
-        assert_ne!(before, fingerprint(&store));
-    }
-
-    #[test]
-    fn fingerprint_changes_on_request_records() {
-        let mut store = Store::new();
-        let before = fingerprint(&store);
-        store.apply(&request_done_line(1_000, 1, 0.5, 1.0, 10, 100, 25, 10, 5));
-        assert_ne!(before, fingerprint(&store));
     }
 
     #[test]
@@ -737,7 +696,7 @@ mod tests {
         store.apply(&throughput_line(200_000, 3.0, 3.0));
         store.apply(&throughput_line(0, 1.0, 1.0));
         store.apply(&throughput_line(100_000, 2.0, 2.0));
-        let data = prepare(&store, ChartKind::Throughput, 300_000);
+        let data = prepare(&store, ChartKind::Throughput, 300_000, 200_000);
         let ts: Vec<f64> = data.series[0].points.iter().map(|&(t, _)| t).collect();
         assert_eq!(
             ts,
@@ -755,7 +714,7 @@ mod tests {
         let raw2 = r#"{"artifact_type":"ninfer_serve_request_log","schema_version":20,"server_instance_id":"s2","timestamp_unix_ms":5000,"event":"server_start"}"#;
         store.apply(&parse_line(raw2.as_bytes()).unwrap());
         store.apply(&throughput_line(6000, 30.0, 40.0));
-        let data = prepare(&store, ChartKind::Throughput, 10_000);
+        let data = prepare(&store, ChartKind::Throughput, 10_000, 6_000);
         let rendered = render(&data, (CHART_WIDTH, CHART_HEIGHT));
         // The restart line/label use the purple RESTART color; at least one
         // pixel should be close to it.
@@ -773,7 +732,7 @@ mod tests {
         let mut store = Store::new();
         store.apply(&throughput_line(1_000, 10.0, 20.0));
         store.apply(&throughput_line(2_000, 30.0, 40.0));
-        let data = prepare(&store, ChartKind::Throughput, 3_000);
+        let data = prepare(&store, ChartKind::Throughput, 3_000, 2_000);
         let rendered = render(&data, (CHART_WIDTH, CHART_HEIGHT));
         let w = CHART_WIDTH as usize;
         let h = CHART_HEIGHT as usize;
@@ -823,7 +782,7 @@ mod tests {
         let mut store = Store::new();
         store.apply(&throughput_line(0, 10.0, 10.0));
         store.apply(&throughput_line(1_000, 12.0, 5.0));
-        let data = prepare(&store, ChartKind::Throughput, 3_000);
+        let data = prepare(&store, ChartKind::Throughput, 3_000, 1_000);
         let rendered = render(&data, (CHART_WIDTH, CHART_HEIGHT));
         let w = CHART_WIDTH as usize;
         let plot_right = (CHART_WIDTH - MARGIN - Y_LABEL_AREA) as usize;
@@ -867,7 +826,7 @@ mod tests {
         let mut store = Store::new();
         store.apply(&throughput_line(0, 10.0, 10.0));
         store.apply(&throughput_line(1_000, 50.0, 5.0));
-        let data = prepare(&store, ChartKind::Throughput, 3_000);
+        let data = prepare(&store, ChartKind::Throughput, 3_000, 1_000);
         let rendered = render(&data, (CHART_WIDTH, CHART_HEIGHT));
         let w = CHART_WIDTH as usize;
         let plot_left = (MARGIN + Y_LABEL_AREA) as usize;
@@ -905,6 +864,98 @@ mod tests {
                 RIGHT_LINE
             ),
             "decode line must sit at its own-scale height"
+        );
+    }
+
+    /// Fraction of columns in `[x0, x1)` that contain a pixel close to `t`
+    /// within 4 rows of `yc` (1.0 = solid, ~dash/gap ratio = dashed).
+    fn colored_column_fraction(
+        rendered: &[u8],
+        x0: usize,
+        x1: usize,
+        yc: usize,
+        t: [u8; 3],
+    ) -> f64 {
+        let w = CHART_WIDTH as usize;
+        let h = CHART_HEIGHT as usize;
+        let close = |i: usize| {
+            (rendered[i] as i32 - t[0] as i32).abs() <= 32
+                && (rendered[i + 1] as i32 - t[1] as i32).abs() <= 32
+                && (rendered[i + 2] as i32 - t[2] as i32).abs() <= 32
+        };
+        let (mut colored, mut total) = (0usize, 0usize);
+        for x in x0..x1 {
+            total += 1;
+            if (yc.saturating_sub(4)..=(yc + 4).min(h - 1)).any(|y| close((y * w + x) * 3)) {
+                colored += 1;
+            }
+        }
+        colored as f64 / total as f64
+    }
+
+    #[test]
+    fn prepare_domain_end_extends_to_now_when_data_is_stale() {
+        let mut store = Store::new();
+        store.apply(&throughput_line(100_000, 1.0, 2.0));
+        store.apply(&throughput_line(200_000, 3.0, 4.0));
+        // `now` is 50 s past the last point (M5): the domain stretches to
+        // `now`; the points are unchanged.
+        let data = prepare(&store, ChartKind::Throughput, 150_000, 250_000);
+        assert_eq!(data.domain, (50_000.0, 250_000.0));
+        assert_eq!(data.series[0].points.len(), 2);
+    }
+
+    #[test]
+    fn prepare_domain_end_clamped_to_last_point_when_now_is_earlier() {
+        let mut store = Store::new();
+        store.apply(&throughput_line(200_000, 3.0, 4.0));
+        // Clock skew: `now` is earlier than the last point, so the domain
+        // end stays at the last point.
+        let data = prepare(&store, ChartKind::Throughput, 150_000, 100_000);
+        assert_eq!(data.domain, (50_000.0, 200_000.0));
+    }
+
+    #[test]
+    fn stale_series_gets_dashed_tail_to_right_edge() {
+        let mut store = Store::new();
+        store.apply(&throughput_line(0, 21.0, 5.0));
+        store.apply(&throughput_line(1_000, 10.0, 10.0));
+        // Stale: `now` is 2_000 ms past the last point, so each series is
+        // extended with a dashed tail from t=1_000 to the right edge t=3_000.
+        let data = prepare(&store, ChartKind::Throughput, 3_000, 3_000);
+        assert_eq!(data.domain, (0.0, 3_000.0));
+        let rendered = render(&data, (CHART_WIDTH, CHART_HEIGHT));
+        let plot_left = (MARGIN + Y_LABEL_AREA) as usize;
+        let plot_right = (CHART_WIDTH - MARGIN - Y_LABEL_AREA) as usize;
+        // The last point sits at t=1_000, a third into the [0, 3_000] domain.
+        let x_last = plot_left + (plot_right - plot_left) / 3;
+        let y_left = y_pixel(10.0, 10.0 * 1.1);
+        // In the tail region the left series must be dashed: partially
+        // colored, but not a continuous line.
+        let frac = colored_column_fraction(&rendered, x_last + 8, plot_right, y_left, LEFT_LINE);
+        assert!(
+            (0.3..0.9).contains(&frac),
+            "the stale tail must be dashed (colored-column fraction {frac})"
+        );
+    }
+
+    #[test]
+    fn fresh_series_has_no_dashed_tail() {
+        let mut store = Store::new();
+        store.apply(&throughput_line(0, 5.0, 10.0));
+        store.apply(&throughput_line(1_000, 5.0, 10.0));
+        // Fresh: `now` equals the last point, so the solid line reaches the
+        // right edge and no dashed tail is drawn.
+        let data = prepare(&store, ChartKind::Throughput, 3_000, 1_000);
+        assert_eq!(data.domain, (0.0, 1_000.0));
+        let rendered = render(&data, (CHART_WIDTH, CHART_HEIGHT));
+        let plot_left = (MARGIN + Y_LABEL_AREA) as usize;
+        let plot_right = (CHART_WIDTH - MARGIN - Y_LABEL_AREA) as usize;
+        let y_left = y_pixel(10.0, 10.0 * 1.1);
+        let frac = colored_column_fraction(&rendered, plot_left + 8, plot_right, y_left, LEFT_LINE);
+        assert!(
+            frac >= 0.98,
+            "a fresh series must be a continuous solid line (fraction {frac})"
         );
     }
 }

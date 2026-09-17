@@ -1,0 +1,66 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+import { MetricWidget } from "metric_widget.slint";
+
+/// The display data for one GPU row (M4), mapped from `gpu::GpuRowData`.
+export struct GpuDevice {
+    usage-title: string,
+    usage-left-label: string,
+    usage-left-value: string,
+    usage-left-unit: string,
+    usage-right-label: string,
+    usage-right-value: string,
+    usage-image: image,
+    temp-title: string,
+    temp-left-label: string,
+    temp-left-value: string,
+    temp-left-unit: string,
+    temp-right-label: string,
+    temp-right-value: string,
+    temp-right-unit: string,
+    temp-image: image,
+}
+
+/// One GPU row (M4): two equal-height metric widgets — usage/memory on the
+/// left (the title carries the GPU name), temperature on the right.
+export component GpuRow inherits Rectangle {
+    in property <GpuDevice> device;
+
+    border-radius: 6px;
+
+    usage-widget := MetricWidget {
+        x: 0;
+        y: 0;
+        width: (parent.width - 8px) / 2;
+        height: parent.height;
+        title: root.device.usage-title;
+        left-label: root.device.usage-left-label;
+        left-value: root.device.usage-left-value;
+        left-unit: root.device.usage-left-unit;
+        right-label: root.device.usage-right-label;
+        right-value: root.device.usage-right-value;
+        right-value-font-size: 16px;
+        show-flat-trend: false;
+        chart-image: root.device.usage-image;
+    }
+
+    temp-widget := MetricWidget {
+        x: (parent.width + 8px) / 2;
+        y: 0;
+        width: (parent.width - 8px) / 2;
+        height: parent.height;
+        title: root.device.temp-title;
+        left-label: root.device.temp-left-label;
+        left-value: root.device.temp-left-value;
+        left-unit: root.device.temp-left-unit;
+        right-label: root.device.temp-right-label;
+        right-value: root.device.temp-right-value;
+        right-unit: root.device.temp-right-unit;
+        show-flat-trend: false;
+        chart-image: root.device.temp-image;
+    }
+}

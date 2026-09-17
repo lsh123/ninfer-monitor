@@ -15,6 +15,7 @@ export component AboutPanel inherits Rectangle {
     border-radius: 6px;
     border-width: 1px;
     border-color: #3c3c3c;
+    height: content-layout.preferred-height;
 
     click-blocker := TouchArea {
         width: parent.width;
@@ -29,70 +30,47 @@ export component AboutPanel inherits Rectangle {
             }
         }
 
-        VerticalLayout {
-            padding: 12px;
-            spacing: 10px;
+        content-layout := VerticalLayout {
+            padding: 48px;
+            spacing: 12px;
 
-            HorizontalLayout {
-                spacing: 8px;
+            Text {
+                text: "About";
+                font-size: 18px;
+                font-weight: 700;
+                color: #e0e0e0;
+            }
 
-                Text {
-                    text: "About";
-                    font-size: 14px;
-                    font-weight: 700;
-                    color: #e0e0e0;
+            Rectangle {
+                height: 16px;
+            }
+
+            about-texts := HorizontalLayout {
+                spacing: 0px;
+
+                VerticalLayout {
+                    spacing: 6px;
+
+                    Text {
+                        text: root.version == "" ? "NInferMonitor" : "NInferMonitor v" + root.version;
+                        font-size: 13px;
+                        color: #e0e0e0;
+                    }
+
+                    Text {
+                        text: "Copyright (C) 2026 Aleksey Sanin";
+                        font-size: 12px;
+                        color: #9e9e9e;
+                    }
                 }
 
                 Rectangle {
                     horizontal-stretch: 1;
                 }
-
-                btn-close-x := DarkButton {
-                    text: "×";
-                    width: 24px;
-                    height: 24px;
-                    accessible-text: "Close about";
-                    clicked => {
-                        root.close();
-                    }
-                }
             }
 
-            body := VerticalLayout {
-                vertical-stretch: 1;
-                spacing: 0px;
-
-                top-spacer := Rectangle {
-                    vertical-stretch: 1;
-                }
-
-                about-texts := HorizontalLayout {
-                    spacing: 0px;
-
-                    VerticalLayout {
-                        spacing: 6px;
-
-                        Text {
-                            text: root.version == "" ? "NInferMonitor" : "NInferMonitor v" + root.version;
-                            font-size: 13px;
-                            color: #e0e0e0;
-                        }
-
-                        Text {
-                            text: "Copyright (C) 2026 Aleksey Sanin";
-                            font-size: 12px;
-                            color: #9e9e9e;
-                        }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                    }
-                }
-
-                bottom-spacer := Rectangle {
-                    vertical-stretch: 1;
-                }
+            Rectangle {
+                height: 16px;
             }
 
             HorizontalLayout {
@@ -101,7 +79,7 @@ export component AboutPanel inherits Rectangle {
 
                 btn-ok := DarkButton {
                     text: "OK";
-                    min-width: 60px;
+                    width: 90px;
                     height: 24px;
                     clicked => {
                         root.close();

@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
-pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+pub const DEFAULT_LOG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 const HEAD_LEN: usize = 64;
 
@@ -21,7 +21,6 @@ const HEAD_LEN: usize = 64;
 pub enum TailStatus {
     Live,
     Disconnected,
-    Paused,
 }
 
 impl std::fmt::Display for TailStatus {
@@ -29,7 +28,6 @@ impl std::fmt::Display for TailStatus {
         let s = match self {
             TailStatus::Live => "Live",
             TailStatus::Disconnected => "Disconnected",
-            TailStatus::Paused => "Paused",
         };
         f.write_str(s)
     }
@@ -99,7 +97,6 @@ pub struct Tail {
     line_buf: Vec<u8>,
     head: Vec<u8>,
     last_event_time: Option<SystemTime>,
-    paused: bool,
     start_at_end: bool,
 }
 
@@ -115,7 +112,6 @@ impl Tail {
             line_buf: Vec::new(),
             head: Vec::new(),
             last_event_time: None,
-            paused: false,
             start_at_end: false,
         }
     }
@@ -128,10 +124,6 @@ impl Tail {
 
     pub fn poll_interval(&self) -> Duration {
         self.poll_interval
-    }
-
-    pub fn set_paused(&mut self, paused: bool) {
-        self.paused = paused;
     }
 
     pub fn poll(&mut self) -> PollResult {
@@ -216,9 +208,7 @@ impl Tail {
             Vec::new()
         };
 
-        let status = if self.paused {
-            TailStatus::Paused
-        } else if connected {
+        let status = if connected {
             TailStatus::Live
         } else {
             TailStatus::Disconnected

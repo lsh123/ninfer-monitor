@@ -36,8 +36,6 @@ export component ServerInfoPanel inherits Rectangle {
     in property <string> summary: "No server info yet";
     in property <string> model: "—";
     in property <string> engine: "—";
-    in property <string> gpu: "—";
-    in property <string> memory: "—";
     in property <string> server: "—";
 
     background: #252526;
@@ -79,16 +77,6 @@ export component ServerInfoPanel inherits Rectangle {
                 InfoRow {
                     name: "Engine";
                     value: root.engine;
-                }
-
-                InfoRow {
-                    name: "GPU";
-                    value: root.gpu;
-                }
-
-                InfoRow {
-                    name: "Memory";
-                    value: root.memory;
                 }
 
                 InfoRow {

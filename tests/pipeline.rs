@@ -263,41 +263,6 @@ fn take_latest_returns_newest_pending_snapshot() {
 }
 
 #[test]
-fn clear_resets_store_and_bumps_clear_count() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("log.jsonl");
-    File::create(&path).unwrap();
-
-    let pipeline = Pipeline::start(&path, POLL, MAX_REQUESTS);
-    wait_for(&pipeline, |u| u.status == TailStatus::Live).expect("never went Live");
-
-    append_line(&path, &throughput_line(1000));
-    let update = wait_for(&pipeline, |u| u.store.latest_throughput().is_some())
-        .expect("throughput line never arrived");
-    assert_eq!(update.clear_count, 0);
-
-    pipeline.clear();
-    let update = wait_for(&pipeline, |u| u.clear_count == 1).expect("clear snapshot never arrived");
-    assert!(update.store.throughput().is_empty());
-    assert!(update.last_event_time.is_none());
-    assert_eq!(update.status, TailStatus::Live);
-
-    append_line(&path, &throughput_line(2000));
-    let update = wait_for(&pipeline, |u| u.store.latest_throughput().is_some())
-        .expect("post-clear line never arrived");
-    assert_eq!(update.clear_count, 1);
-    assert_eq!(
-        update
-            .store
-            .latest_throughput()
-            .expect("sample")
-            .timestamp_ms,
-        2000
-    );
-    pipeline.stop();
-}
-
-#[test]
 fn second_server_start_resets_store_through_pipeline() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("log.jsonl");

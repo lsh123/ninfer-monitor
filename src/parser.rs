@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
-pub const SUPPORTED_SCHEMA_VERSION: u32 = 20;
+pub const SUPPORTED_SCHEMA_VERSION: u32 = 21;
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -119,6 +119,12 @@ pub struct Artifact {
     pub load_seconds: Option<f64>,
     pub upload_seconds: Option<f64>,
     pub tensor_count: Option<u64>,
+    pub name: Option<String>,
+    pub architecture: Option<String>,
+    pub formats: Vec<String>,
+    pub prefill_signature: Option<String>,
+    pub device_object_count: Option<u64>,
+    pub host_object_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -230,6 +236,7 @@ pub struct RequestDoneEvent {
     pub timings_seconds: TimingsSeconds,
     pub engine_timing: EngineTiming,
     pub speculative: Speculative,
+    pub materialization: Materialization,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -311,6 +318,20 @@ pub struct Speculative {
     pub accepted_per_position: Vec<u64>,
     pub fallback_steps: Option<u64>,
     pub rounds: Option<u64>,
+}
+
+/// KV-cache materialization diagnostics from a `request_done` event: the
+/// pressure-related fields (schema 20) and the materialization-search fields
+/// (schema 21).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Materialization {
+    pub stop_reason: Option<String>,
+    pub budget_exhausted: Option<bool>,
+    pub selected_degradation_units: Option<u64>,
+    pub selected_maximal_fallback: Option<bool>,
+    pub search_stop_phase: Option<String>,
+    pub search_boundary_limited: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -731,11 +752,11 @@ mod tests {
 
     #[test]
     fn newer_schema_version_parses_and_flags_too_new() {
-        let raw = "{\"artifact_type\":\"ninfer_serve_request_log\",\"schema_version\":21,\
+        let raw = "{\"artifact_type\":\"ninfer_serve_request_log\",\"schema_version\":22,\
                    \"server_instance_id\":\"s\",\"timestamp_unix_ms\":1,\
                    \"event\":\"throughput\"}";
         let event = parse_line(raw.as_bytes()).unwrap();
-        assert_eq!(event.schema_version(), Some(21));
+        assert_eq!(event.schema_version(), Some(22));
         assert!(event.schema_too_new());
     }
 
@@ -778,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn server_start_round_trip() {
+    fn server_start_round_trip_schema_20() {
         let raw = format!(
             r#"{{{ENVELOPE},"event":"server_start",
             "argv":["ninfer-serve","--port","8080"],
@@ -817,6 +838,46 @@ mod tests {
         );
         assert_eq!(e.timestamp_unix_ms, Some(1789281778921));
         assert_eq!(e.server_instance_id.as_deref(), Some("serve-test-1"));
+    }
+
+    #[test]
+    fn server_start_round_trip_schema_21() {
+        let raw = r#"{"artifact_type":"ninfer_serve_request_log","schema_version":21,
+        "server_instance_id":"serve-test-1","timestamp_unix_ms":1789281778921,
+        "event":"server_start",
+        "argv":["ninfer-serve","models\\qwen3_8_27b_nvfp4.ninfer"],
+        "artifact":{"architecture":"qwen3_8_27b","bytes_read":21196796217,"device_object_count":673,"formats":["nvfp4"],"host_object_count":6,"host_to_device_bytes":21183894976,"load_seconds":9.6972125,"name":"","path":"models\\qwen3_8_27b_nvfp4.ninfer","peak_staging_bytes":268435456,"prefill_signature":"3f7a9c2e5b8d4160e0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607","size_bytes":23719496192,"upload_seconds":6.8405596},
+        "engine":{"kv_cache":"fp8-e4m3-row256","kv_capacity":240000,"max_context":240000,"max_concurrency":2,"prefill_chunk":2048,"speculative_backend":"mtp","cuda_graph":true,"prefix_reuse":true,"log_stats_interval_ms":5000,"context_cost":{"hardware_class":"nvidia-geforce-rtx-5090-sm120","prefill_signature":"3f7a9c2e5b8d4160e0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607","prefill_source":"compiled-default","preset_path":"","transfer_source":"compiled-default"}},
+        "environment":{"gpu_name":"NVIDIA GeForce RTX 5090","compute_capability_major":12,"compute_capability_minor":0,"cuda_driver_version":"13.4","cuda_runtime_version":"13.4","total_device_memory_bytes":34162016256},
+        "memory":{"weights":{"capacity_bytes":21183929344,"used_bytes":21183929344,"peak_used_bytes":21183929344},"sequence":{"capacity_bytes":9080226048,"used_bytes":9080226048,"peak_used_bytes":9080226048},"workspace":{"capacity_bytes":319963136,"used_bytes":0,"peak_used_bytes":319963136},"available_after_weights_bytes":11310989312,"host_kv_capacity_bytes":17179869184},
+        "server":{"host":"0.0.0.0","port":8080,"public_model_id":"qwen3.8-27b-nvfp4","request_log_jsonl":"d:/NInfer/logs/server.requests.jsonl","default_thinking":null,"default_preserve_thinking":true}}"#;
+        let ParsedEvent::ServerStart(e) = parse_line(raw.as_bytes()).unwrap() else {
+            panic!("expected ServerStart");
+        };
+        assert_eq!(e.schema_version, Some(21));
+        assert_eq!(e.artifact.name.as_deref(), Some(""));
+        assert_eq!(e.artifact.architecture.as_deref(), Some("qwen3_8_27b"));
+        assert_eq!(e.artifact.formats, vec!["nvfp4"]);
+        assert_eq!(
+            e.artifact.prefill_signature.as_deref(),
+            Some("3f7a9c2e5b8d4160e0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607")
+        );
+        assert_eq!(e.artifact.device_object_count, Some(673));
+        assert_eq!(e.artifact.host_object_count, Some(6));
+        assert_eq!(e.artifact.size_bytes, Some(23719496192));
+        assert_eq!(e.artifact.load_seconds, Some(9.6972125));
+        assert_eq!(e.artifact.upload_seconds, Some(6.8405596));
+        assert_eq!(e.artifact.target, None);
+        assert_eq!(e.artifact.weights_id, None);
+        assert_eq!(e.engine.kv_capacity, Some(240000));
+        assert_eq!(
+            e.environment.gpu_name.as_deref(),
+            Some("NVIDIA GeForce RTX 5090")
+        );
+        assert_eq!(
+            e.server.public_model_id.as_deref(),
+            Some("qwen3.8-27b-nvfp4")
+        );
     }
 
     #[test]
@@ -859,7 +920,8 @@ mod tests {
             "result":{{"prompt_tokens":645,"completion_tokens":155,"model_thinking_tokens":0,"finish_reason":"stop_token","prefix_cache_hit_tokens":0,"prefix_reuse_path":"root","tool_call_count":0,"tool_call_parse":{{"structured_call_count":0,"fallback_reason":"none","marker_seen":false}}}},
             "timings_seconds":{{"ttft":0.4219088,"prefill":0.4204818,"decode":1.3753831,"prepare":0.0006098,"total":3.9243131,"vision":0.0}},
             "engine_timing":{{"queue_wait_seconds":0.0010093,"device_wait_exposed_seconds":3.1007284,"host_exposed_seconds":{{"engine_boundary":0.0023163,"engine_commit_output":0.0025529,"engine_maintenance":0.0000637,"program_post":0.0003812,"program_submit":0.8165297,"total":0.8218438}},"decode":{{"device_wait_exposed_seconds":1.3696447,"host_exposed_seconds":0.007073,"rounds":47}},"units":{{"control":0,"prefill":3}}}},
-            "speculative":{{"backend":"mtp","drafted_tokens":141,"accepted_tokens":109,"accepted_per_position":[40,37,32],"fallback_steps":0,"rounds":47}}}}"#
+            "speculative":{{"backend":"mtp","drafted_tokens":141,"accepted_tokens":109,"accepted_per_position":[40,37,32],"fallback_steps":0,"rounds":47}},
+            "materialization":{{"stop_reason":"time_budget","budget_exhausted":true,"selected_degradation_units":2,"selected_maximal_fallback":false,"search_stop_phase":"refinement","search_boundary_limited":true}}}}"#
         );
         let ParsedEvent::RequestDone(e) = parse_line(raw.as_bytes()).unwrap() else {
             panic!("expected RequestDone");
@@ -911,6 +973,18 @@ mod tests {
         assert_eq!(e.speculative.accepted_tokens, Some(109));
         assert_eq!(e.speculative.accepted_per_position, vec![40, 37, 32]);
         assert_eq!(e.speculative.rounds, Some(47));
+        assert_eq!(
+            e.materialization.stop_reason.as_deref(),
+            Some("time_budget")
+        );
+        assert_eq!(e.materialization.budget_exhausted, Some(true));
+        assert_eq!(e.materialization.selected_degradation_units, Some(2));
+        assert_eq!(e.materialization.selected_maximal_fallback, Some(false));
+        assert_eq!(
+            e.materialization.search_stop_phase.as_deref(),
+            Some("refinement")
+        );
+        assert_eq!(e.materialization.search_boundary_limited, Some(true));
     }
 
     #[test]

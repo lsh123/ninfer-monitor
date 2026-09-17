@@ -33,9 +33,14 @@ fn sample_log_kpi_values_match_hand_computed() {
     // 0.007278349731205014 s, hit rate 1714827/1720108, spec acceptance
     // 6424/7764.
     assert_eq!(k.ttft.value, "446");
+    assert_eq!(k.ttft.unit, "ms");
     assert_eq!(k.decode_latency.value, "7.3");
+    assert_eq!(k.decode_latency.unit, "ms");
     assert_eq!(k.cache_hit.value, "99.7");
+    assert_eq!(k.cache_hit.unit, "%");
     assert_eq!(k.spec_accept.value, "82.7");
+    assert_eq!(k.spec_accept.unit, "%");
+    assert_eq!(k.decode.unit, "");
 }
 
 #[test]
@@ -92,6 +97,7 @@ fn appended_request_done_updates_windowed_kpis() {
     // = 0.4918211083333333 s -> 492 ms; hit rate 1714827/1721108;
     // spec acceptance 6474/7864.
     assert_eq!(after.ttft.value, "492");
+    assert_eq!(after.ttft.unit, "ms");
     assert_eq!(after.cache_hit.value, "99.6");
     assert_eq!(after.spec_accept.value, "82.3");
 }

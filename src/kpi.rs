@@ -28,11 +28,14 @@ impl Trend {
     }
 }
 
-/// Display state of one KPI value (FR-3). The unit is carried by the widget
-/// title (e.g. "Throughput (tok/s)"), not by the value.
+/// Display state of one KPI value (FR-3). Most KPIs carry their unit in the
+/// widget title (e.g. "Throughput (tok/s)"); the latency KPIs carry an
+/// adaptive unit (`ms`/`s`/`min`) and the rate KPIs a `%` next to the value
+/// instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Kpi {
     pub value: String,
+    pub unit: String,
     pub trend: Trend,
 }
 
@@ -40,6 +43,7 @@ impl Kpi {
     fn missing() -> Self {
         Self {
             value: NO_DATA.to_owned(),
+            unit: String::new(),
             trend: Trend::Flat,
         }
     }
@@ -71,21 +75,21 @@ pub fn snapshot(store: &Store) -> KpiSnapshot {
         prefill: throughput_kpi(store, |s| s.prefill_tps),
         active: active_kpi(store),
         waiting: waiting_kpi(store),
-        ttft: windowed_kpi(w.avg_ttft(), w.avg_ttft_previous(), fmt_ms),
+        ttft: windowed_kpi(w.avg_ttft(), w.avg_ttft_previous(), fmt_duration),
         decode_latency: windowed_kpi(
             w.avg_decode_latency_per_token(),
             w.avg_decode_latency_per_token_previous(),
-            |v| fmt_1dp(v * 1000.0),
+            fmt_duration,
         ),
         cache_hit: windowed_kpi(
             w.prefix_cache_hit_rate(),
             w.prefix_cache_hit_rate_previous(),
-            fmt_pct,
+            |v| (fmt_pct(v), "%".to_owned()),
         ),
         spec_accept: windowed_kpi(
             w.speculative_acceptance(),
             w.speculative_acceptance_previous(),
-            fmt_pct,
+            |v| (fmt_pct(v), "%".to_owned()),
         ),
     }
 }
@@ -103,12 +107,16 @@ macro_rules! apply_kpis {
         $window.set_kpi_waiting_value(k.waiting.value.as_str().into());
         $window.set_kpi_waiting_trend(k.waiting.trend.as_int());
         $window.set_kpi_ttft_value(k.ttft.value.as_str().into());
+        $window.set_kpi_ttft_unit(k.ttft.unit.as_str().into());
         $window.set_kpi_ttft_trend(k.ttft.trend.as_int());
         $window.set_kpi_decode_lat_value(k.decode_latency.value.as_str().into());
+        $window.set_kpi_decode_lat_unit(k.decode_latency.unit.as_str().into());
         $window.set_kpi_decode_lat_trend(k.decode_latency.trend.as_int());
         $window.set_kpi_cache_value(k.cache_hit.value.as_str().into());
+        $window.set_kpi_cache_unit(k.cache_hit.unit.as_str().into());
         $window.set_kpi_cache_trend(k.cache_hit.trend.as_int());
         $window.set_kpi_spec_value(k.spec_accept.value.as_str().into());
+        $window.set_kpi_spec_unit(k.spec_accept.unit.as_str().into());
         $window.set_kpi_spec_trend(k.spec_accept.trend.as_int());
     }};
 }
@@ -125,6 +133,7 @@ fn throughput_kpi(store: &Store, field: impl Fn(&ThroughputSample) -> Option<f64
     let previous = previous_window_mean(store, latest.timestamp_ms, field);
     Kpi {
         value: fmt_1dp(value),
+        unit: String::new(),
         trend: compare(Some(value), previous),
     }
 }
@@ -177,20 +186,26 @@ fn scheduler_kpi(store: &Store, field: impl Fn(&ThroughputSample) -> Option<u64>
     let previous = previous_window_mean(store, latest.timestamp_ms, |s| field(s).map(|v| v as f64));
     Kpi {
         value: value.to_string(),
+        unit: String::new(),
         trend: compare(Some(value as f64), previous),
     }
 }
 
-fn windowed_kpi(current: Option<f64>, previous: Option<f64>, fmt: impl Fn(f64) -> String) -> Kpi {
+fn windowed_kpi(
+    current: Option<f64>,
+    previous: Option<f64>,
+    fmt: impl Fn(f64) -> (String, String),
+) -> Kpi {
     match current {
-        Some(value) => Kpi {
-            value: fmt(value),
-            trend: compare(current, previous),
-        },
-        None => Kpi {
-            value: NO_DATA.to_owned(),
-            trend: Trend::Flat,
-        },
+        Some(value) => {
+            let (value, unit) = fmt(value);
+            Kpi {
+                value,
+                unit,
+                trend: compare(current, previous),
+            }
+        }
+        None => Kpi::missing(),
     }
 }
 
@@ -202,8 +217,25 @@ fn compare(current: Option<f64>, previous: Option<f64>) -> Trend {
     }
 }
 
-fn fmt_ms(seconds: f64) -> String {
-    format!("{}", (seconds * 1000.0).round() as u64)
+/// Format a duration in seconds with a magnitude-adaptive unit: milliseconds
+/// (one decimal below 10 ms, whole below 1 s), seconds (one decimal) below
+/// 1 min, minutes (one decimal) from 1 min up. Returns the number and the
+/// unit (`"ms"`/`"s"`/`"min"`) separately so the UI shows the unit next to
+/// the number (FR-3.1).
+fn fmt_duration(seconds: f64) -> (String, String) {
+    let ms = (seconds * 1000.0).round();
+    if ms < 10.0 {
+        return (format!("{:.1}", seconds * 1000.0), "ms".to_owned());
+    }
+    if ms < 1000.0 {
+        return (format!("{ms}"), "ms".to_owned());
+    }
+    let s = (seconds * 10.0).round() / 10.0;
+    if s < 60.0 {
+        return (format!("{s:.1}"), "s".to_owned());
+    }
+    let min = (s / 6.0).round() / 10.0;
+    (format!("{min:.1}"), "min".to_owned())
 }
 
 fn fmt_1dp(value: f64) -> String {
@@ -267,6 +299,7 @@ mod tests {
             &k.spec_accept,
         ] {
             assert_eq!(kpi.value, NO_DATA);
+            assert_eq!(kpi.unit, "");
             assert_eq!(kpi.trend, Trend::Flat);
         }
     }
@@ -326,12 +359,16 @@ mod tests {
         store.apply(&throughput_line(100_000, 1.0, 2.0));
         let k = snapshot(&store);
         assert_eq!(k.ttft.value, "500");
+        assert_eq!(k.ttft.unit, "ms");
         assert_eq!(k.ttft.trend, Trend::Down);
-        assert_eq!(k.decode_latency.value, "20.0");
+        assert_eq!(k.decode_latency.value, "20");
+        assert_eq!(k.decode_latency.unit, "ms");
         assert_eq!(k.decode_latency.trend, Trend::Flat);
         assert_eq!(k.cache_hit.value, "25.0");
+        assert_eq!(k.cache_hit.unit, "%");
         assert_eq!(k.cache_hit.trend, Trend::Flat);
         assert_eq!(k.spec_accept.value, "50.0");
+        assert_eq!(k.spec_accept.unit, "%");
         assert_eq!(k.spec_accept.trend, Trend::Flat);
     }
 
@@ -342,7 +379,8 @@ mod tests {
         store.apply(&request_done_line(50_000, 2, 1.0));
         store.apply(&throughput_line(100_000, 1.0, 2.0));
         let k = snapshot(&store);
-        assert_eq!(k.ttft.value, "1000");
+        assert_eq!(k.ttft.value, "1.0");
+        assert_eq!(k.ttft.unit, "s");
         assert_eq!(k.ttft.trend, Trend::Up);
     }
 
@@ -398,11 +436,27 @@ mod tests {
 
     #[test]
     fn formatting_matches_prd_reference_values() {
-        assert_eq!(fmt_ms(0.4219088), "422");
+        assert_eq!(fmt_duration(0.4219088), ("422".into(), "ms".into()));
+        assert_eq!(
+            fmt_duration(0.007278349731205014),
+            ("7.3".into(), "ms".into())
+        );
         assert_eq!(fmt_1dp(123.89240590071061), "123.9");
         assert_eq!(fmt_1dp(0.0), "0.0");
-        assert_eq!(fmt_1dp(0.007278349731205014 * 1000.0), "7.3");
         assert_eq!(fmt_pct(0.9969298439400317), "99.7");
         assert_eq!(fmt_pct(0.8274085522926327), "82.7");
+    }
+
+    #[test]
+    fn fmt_duration_adapts_unit_to_magnitude() {
+        assert_eq!(fmt_duration(0.0), ("0.0".into(), "ms".into()));
+        assert_eq!(fmt_duration(0.999), ("999".into(), "ms".into()));
+        assert_eq!(fmt_duration(0.9996), ("1.0".into(), "s".into()));
+        assert_eq!(fmt_duration(1.0), ("1.0".into(), "s".into()));
+        assert_eq!(fmt_duration(59.9), ("59.9".into(), "s".into()));
+        assert_eq!(fmt_duration(59.96), ("1.0".into(), "min".into()));
+        assert_eq!(fmt_duration(60.0), ("1.0".into(), "min".into()));
+        assert_eq!(fmt_duration(150.0), ("2.5".into(), "min".into()));
+        assert_eq!(fmt_duration(3600.0), ("60.0".into(), "min".into()));
     }
 }

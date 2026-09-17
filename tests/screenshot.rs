@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use i_slint_backend_testing::ElementHandle;
+use ninfer_monitor::gpu::{self, DevicePoint, GpuHistory, GpuSample, GpuSnapshot, TempUnit};
 use ninfer_monitor::kpi;
 use ninfer_monitor::requests;
 use ninfer_monitor::store::Store;
@@ -24,7 +25,6 @@ const WIDTH: f32 = 1280.0;
 const HEIGHT: f32 = 800.0;
 
 const COLOR_LIVE: slint::Color = slint::Color::from_rgb_u8(0x4c, 0xaf, 0x50);
-const COLOR_PAUSED: slint::Color = slint::Color::from_rgb_u8(0xff, 0xc1, 0x07);
 const COLOR_DISCONNECTED: slint::Color = slint::Color::from_rgb_u8(0xf4, 0x43, 0x36);
 
 std::thread_local! {
@@ -217,6 +217,17 @@ fn sample_store() -> Store {
     Store::load_jsonl(path).expect("read sample log")
 }
 
+/// The deterministic "current time" for the charts' right edge (M5): the
+/// fixture's last event plus 20 s, so the snapshots show a short dashed
+/// stale tail without depending on the wall clock.
+fn now_ms(store: &Store) -> u64 {
+    store.max_timestamp_ms().unwrap_or(0).saturating_add(20_000)
+}
+
+/// The deterministic "current time" for the synthetic GPU history (M5): 20 s
+/// after its last sample (ts = 300_000).
+const GPU_NOW_MS: u64 = 320_000;
+
 fn apply_request_rows(window: &MainWindow, store: &Store) {
     let empty_ids = std::collections::HashSet::new();
     let rows_data = requests::table_rows(store, &empty_ids);
@@ -238,7 +249,12 @@ fn set_live_state(window: &MainWindow) -> Rc<Store> {
     ninfer_monitor::apply_kpis!(window, &k);
     let info = ninfer_monitor::server_info::snapshot(&store);
     ninfer_monitor::apply_server_info!(window, &info);
-    let images = ninfer_monitor::chart::render_all_sized(&store, 300_000, &panel_sizes(window));
+    let images = ninfer_monitor::chart::render_all_sized(
+        &store,
+        300_000,
+        &panel_sizes(window),
+        now_ms(&store),
+    );
     ninfer_monitor::apply_chart_images!(window, &images);
     apply_request_rows(window, &store);
     store
@@ -263,6 +279,7 @@ fn to_slint_row(r: &requests::TableRowData) -> RequestRow {
         detail_speculative: r.detail.speculative.clone().into(),
         detail_tool_call: r.detail.tool_call.clone().into(),
         detail_prefix: r.detail.prefix.clone().into(),
+        detail_materialization: r.detail.materialization.clone().into(),
         detail_error: r.detail.error.clone().into(),
     }
 }
@@ -279,18 +296,142 @@ fn slint_content_height(rows: &[RequestRow]) -> u32 {
     let details: u32 = rows
         .iter()
         .filter(|r| r.expanded)
-        .map(|r| requests::detail_block_height(!r.detail_error.as_str().is_empty()))
+        .map(|r| {
+            requests::detail_block_height(
+                !r.detail_materialization.as_str().is_empty(),
+                !r.detail_error.as_str().is_empty(),
+            )
+        })
         .sum();
     base + details
 }
 
+/// A deterministic synthetic GPU history + snapshot (M4): one device with a
+/// 31-point ramp across the 5 m window, so the charts are non-empty and stable.
+fn synthetic_gpu() -> (GpuHistory, GpuSnapshot) {
+    let mut history = GpuHistory::new();
+    for i in 0..31 {
+        let ts = i * 10_000u64;
+        history.push(GpuSample {
+            ts_ms: ts,
+            devices: vec![DevicePoint {
+                index: 0,
+                utilization: Some(40.0 + (i as f64) * 1.4),
+                memory_percent: Some(50.0 + (i as f64) * 0.9),
+                temperature: Some(55.0 + (i as f64) * 0.5),
+                memory_temperature: Some(60.0 + (i as f64) * 0.5),
+            }],
+        });
+    }
+    let snapshot = GpuSnapshot {
+        available: true,
+        devices: vec![gpu::GpuDevice {
+            index: 0,
+            name: Some("NVIDIA GeForce RTX 5090".to_owned()),
+            utilization: Some(84),
+            memory_used: Some(12 * 1024 * 1024 * 1024),
+            memory_total: Some(32 * 1024 * 1024 * 1024),
+            temperature: Some(70),
+            memory_temperature: Some(75),
+        }],
+    };
+    (history, snapshot)
+}
+
+fn to_slint_gpu(r: &gpu::GpuRowData) -> GpuDevice {
+    GpuDevice {
+        usage_title: r.usage_title.clone().into(),
+        usage_left_label: r.usage_left_label.clone().into(),
+        usage_left_value: r.usage_left_value.clone().into(),
+        usage_left_unit: r.usage_left_unit.clone().into(),
+        usage_right_label: r.usage_right_label.clone().into(),
+        usage_right_value: r.usage_right_value.clone().into(),
+        usage_image: r.usage_image.clone(),
+        temp_title: r.temp_title.clone().into(),
+        temp_left_label: r.temp_left_label.clone().into(),
+        temp_left_value: r.temp_left_value.clone().into(),
+        temp_left_unit: r.temp_left_unit.clone().into(),
+        temp_right_label: r.temp_right_label.clone().into(),
+        temp_right_value: r.temp_right_value.clone().into(),
+        temp_right_unit: r.temp_right_unit.clone().into(),
+        temp_image: r.temp_image.clone(),
+    }
+}
+
+/// Render the GPU rows at the actual panel sizes (M4). The GPU row is the same
+/// height as a metric row, so its chart size is the throughput chart size.
+fn render_gpu(window: &MainWindow, unit: TempUnit) {
+    let (history, snapshot) = synthetic_gpu();
+    let sizes = panel_sizes(window);
+    let rows = gpu::build_rows(&snapshot, &history, unit, 300_000, sizes[0], GPU_NOW_MS);
+    let slint_rows: Vec<GpuDevice> = rows.iter().map(to_slint_gpu).collect();
+    window.set_gpu_devices(ModelRc::from(Rc::new(slint::VecModel::from(slint_rows))));
+}
+
+/// Seed the GPU model at the default chart size so the layout reflects the
+/// extra row before `set_live_state` reads the panel sizes (M4).
+fn seed_gpu_rows(window: &MainWindow, unit: TempUnit) {
+    let (history, snapshot) = synthetic_gpu();
+    let guess = (
+        ninfer_monitor::chart::CHART_WIDTH,
+        ninfer_monitor::chart::CHART_HEIGHT,
+    );
+    let rows = gpu::build_rows(&snapshot, &history, unit, 300_000, guess, GPU_NOW_MS);
+    let slint_rows: Vec<GpuDevice> = rows.iter().map(to_slint_gpu).collect();
+    window.set_gpu_devices(ModelRc::from(Rc::new(slint::VecModel::from(slint_rows))));
+}
+
+#[test]
+fn screenshot_gpu() {
+    // The GPU section (M4): one row per GPU with usage/memory and temperature
+    // widgets, temperatures in °F.
+    let window = new_window();
+    seed_gpu_rows(&window, TempUnit::Fahrenheit);
+    let _store = set_live_state(&window);
+    render_gpu(&window, TempUnit::Fahrenheit);
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("gpu", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_gpu_celsius() {
+    // The GPU section with the temperature unit set to °C (M4): the widget
+    // values, titles, and chart axes are all in Celsius.
+    let window = new_window();
+    seed_gpu_rows(&window, TempUnit::Celsius);
+    let _store = set_live_state(&window);
+    render_gpu(&window, TempUnit::Celsius);
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("gpu-celsius", width, height, &rgba);
+}
+
 #[test]
 fn screenshot_initial() {
-    // The no-file startup state: controls disabled, "No file selected".
+    // The no-file startup state (PRD v0.2 §3.1/M1): the startup screen is
+    // shown with the "no file" message and a disabled Start button.
     let window = new_window();
-    window.set_controls_enabled(false);
+    window.set_startup_visible(true);
+    window.set_startup_version(env!("CARGO_PKG_VERSION").into());
+    window.set_startup_message(ninfer_monitor::startup::MSG_NO_FILE.into());
+    window.set_startup_file("".into());
+    window.set_startup_start_enabled(false);
     let (width, height, rgba) = capture(&window);
     check_snapshot("initial", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_startup_unreadable() {
+    // The unreadable-file startup state (PRD v0.2 §3.1/M1): the startup screen
+    // is shown with the "cannot be read" message, the file pre-filled, and a
+    // disabled Start button.
+    let window = new_window();
+    window.set_startup_visible(true);
+    window.set_startup_version(env!("CARGO_PKG_VERSION").into());
+    window.set_startup_message(ninfer_monitor::startup::MSG_UNREADABLE.into());
+    window.set_startup_file("C:\\NInfer\\logs\\server.requests.jsonl".into());
+    window.set_startup_start_enabled(false);
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("startup-unreadable", width, height, &rgba);
 }
 
 #[test]
@@ -299,17 +440,6 @@ fn screenshot_live() {
     set_live_state(&window);
     let (width, height, rgba) = capture(&window);
     check_snapshot("live", width, height, &rgba);
-}
-
-#[test]
-fn screenshot_paused() {
-    let window = new_window();
-    set_live_state(&window);
-    window.set_paused(true);
-    window.set_connection_status("Paused".into());
-    window.set_status_color(COLOR_PAUSED);
-    let (width, height, rgba) = capture(&window);
-    check_snapshot("paused", width, height, &rgba);
 }
 
 #[test]
@@ -334,7 +464,7 @@ fn screenshot_cleared() {
     ninfer_monitor::apply_kpis!(&window, &k);
     let info = ninfer_monitor::server_info::snapshot(&empty);
     ninfer_monitor::apply_server_info!(&window, &info);
-    let images = ninfer_monitor::chart::render_all_sized(&empty, 300_000, &panel_sizes(&window));
+    let images = ninfer_monitor::chart::render_all_sized(&empty, 300_000, &panel_sizes(&window), 0);
     ninfer_monitor::apply_chart_images!(&window, &images);
     window.set_request_rows(ModelRc::from(Rc::new(slint::VecModel::<RequestRow>::from(
         Vec::new(),
@@ -361,7 +491,12 @@ fn screenshot_server_restart() {
     ninfer_monitor::apply_kpis!(&window, &k);
     let info = ninfer_monitor::server_info::snapshot(&store);
     ninfer_monitor::apply_server_info!(&window, &info);
-    let images = ninfer_monitor::chart::render_all_sized(&store, 300_000, &panel_sizes(&window));
+    let images = ninfer_monitor::chart::render_all_sized(
+        &store,
+        300_000,
+        &panel_sizes(&window),
+        now_ms(&store),
+    );
     ninfer_monitor::apply_chart_images!(&window, &images);
     apply_request_rows(&window, &store);
     let (width, height, rgba) = capture(&window);
@@ -377,7 +512,12 @@ fn screenshot_chart_window_1h() {
     // this test does not wire it, so set the property directly.
     window.set_chart_window_ms(3_600_000);
     let store = sample_store();
-    let images = ninfer_monitor::chart::render_all_sized(&store, 3_600_000, &panel_sizes(&window));
+    let images = ninfer_monitor::chart::render_all_sized(
+        &store,
+        3_600_000,
+        &panel_sizes(&window),
+        now_ms(&store),
+    );
     ninfer_monitor::apply_chart_images!(&window, &images);
     let (width, height, rgba) = capture(&window);
     check_snapshot("chart-window-1h", width, height, &rgba);
@@ -387,7 +527,12 @@ fn screenshot_chart_window_1h() {
 fn screenshot_settings() {
     let window = new_window();
     set_live_state(&window);
-    window.set_settings_poll_ms(500);
+    window.set_settings_log_poll_ms(500);
+    window.set_settings_gpu_poll_ms(5_000);
+    window.set_settings_file("C:\\logs\\server.requests.jsonl".into());
+    // Show the Windows-only NVIDIA game-popup link (PRD v0.2 §3.2) so the
+    // snapshot is deterministic regardless of the host platform.
+    window.set_nvidia_popup_visible(true);
     window.set_settings_visible(true);
     let (width, height, rgba) = capture(&window);
     check_snapshot("settings", width, height, &rgba);
@@ -397,7 +542,8 @@ fn screenshot_settings() {
 fn screenshot_about() {
     let window = new_window();
     set_live_state(&window);
-    window.set_settings_poll_ms(500);
+    window.set_settings_log_poll_ms(500);
+    window.set_settings_gpu_poll_ms(5_000);
     window.set_settings_visible(true);
     window.set_about_version(env!("CARGO_PKG_VERSION").into());
     window.set_about_visible(true);
@@ -425,4 +571,58 @@ fn screenshot_request_detail() {
     window.set_table_content_height(slint_content_height(&rows) as f32);
     let (width, height, rgba) = capture(&window);
     check_snapshot("request-detail", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_table_columns() {
+    // The request table with the column widths changed from the defaults
+    // (M7): the header sliders and the row cells follow the new widths (the
+    // total stays 1136px, the available column width at the default 1280px
+    // window).
+    let window = new_window();
+    set_live_state(&window);
+    window.set_col_id(56.0);
+    window.set_col_time(120.0);
+    window.set_col_model(320.0);
+    window.set_col_prompt(72.0);
+    window.set_col_compl(72.0);
+    window.set_col_think(72.0);
+    window.set_col_ttft(72.0);
+    window.set_col_total(72.0);
+    window.set_col_reason(180.0);
+    window.set_col_status(100.0);
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("table-columns", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_update() {
+    // The update-available state (M8 §5.3): the background check found a
+    // newer release, so the update button is shown in the toolbar, left of
+    // the settings button.
+    let window = new_window();
+    set_live_state(&window);
+    window.set_update_available(true);
+    window.set_update_version("0.3.0".into());
+    window.set_update_release_url(
+        "https://github.com/lsh123/ninfer-monitor/releases/tag/v0.3.0".into(),
+    );
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("update", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_update_dialog() {
+    // The "New version available" dialog (M8 §5.3) over the live dashboard:
+    // title, the version question, the release notes link, and OK/Cancel.
+    let window = new_window();
+    set_live_state(&window);
+    window.set_update_available(true);
+    window.set_update_version("0.3.0".into());
+    window.set_update_release_url(
+        "https://github.com/lsh123/ninfer-monitor/releases/tag/v0.3.0".into(),
+    );
+    window.set_update_visible(true);
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("update-dialog", width, height, &rgba);
 }

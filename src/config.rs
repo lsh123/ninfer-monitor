@@ -9,13 +9,19 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::columns::{TableColumns, parse_table_columns};
+use crate::gpu::TempUnit;
 use crate::split::{SplitPanels, parse_split_panels};
+use crate::update_check::clamp_period_days;
 use crate::window_state::{WindowState, parse_window_state};
 
-use crate::tail::DEFAULT_POLL_INTERVAL;
+use crate::tail::DEFAULT_LOG_POLL_INTERVAL;
 
-pub const MIN_POLL_MS: u64 = 100;
-pub const MAX_POLL_MS: u64 = 5_000;
+pub const MIN_LOG_POLL_MS: u64 = 100;
+pub const MAX_LOG_POLL_MS: u64 = 5_000;
+pub const MIN_GPU_POLL_MS: u64 = 1_000;
+pub const MAX_GPU_POLL_MS: u64 = 10_000;
+pub const DEFAULT_GPU_POLL_MS: u64 = 5_000;
 pub const MIN_WINDOW_MS: u64 = 60_000;
 pub const MAX_WINDOW_MS: u64 = 3_600_000;
 pub const DEFAULT_WINDOW_MS: u64 = 300_000;
@@ -26,38 +32,70 @@ pub const DEFAULT_MAX_REQUESTS: u64 = 1_000;
 pub const CONFIG_DIR: &str = ".ninfer-monitor";
 pub const CONFIG_FILE: &str = "config.json";
 
-/// Persisted settings (FR-7.2): last log path, poll interval, chart window,
-/// max request rows, split-panel fractions, and window geometry.
+/// Persisted settings (FR-7.2): last log path, log file poll interval, GPU
+/// poll interval, chart window, max request rows, temperature unit,
+/// split-panel fractions, request-table column widths, window geometry, and
+/// the automatic update-check state (M8).
 ///
 /// Unknown fields are ignored (forward compatibility); missing fields fall
 /// back to the defaults below.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Config {
     pub last_path: Option<String>,
-    pub poll_interval_ms: u64,
+    pub log_poll_interval_ms: u64,
+    pub gpu_poll_interval_ms: u64,
     pub chart_window_ms: u64,
     pub max_requests: u64,
+    /// GPU temperature display unit, stored as `"F"` or `"C"` (M4).
+    pub temp_unit: String,
     pub split_panels: SplitPanels,
+    /// The request-table column widths and the window width they were saved
+    /// at (M7); restored only when the window width is unchanged.
+    pub table_columns: Option<TableColumns>,
     pub window_state: Option<WindowState>,
+    /// Whether automatic update checks are enabled (M8).
+    pub update_check_enabled: bool,
+    /// The update-check period in days, clamped to 1..=14 (M8).
+    pub update_check_period_days: u64,
+    /// The time of the last successful update check, in unix milliseconds
+    /// (M8); `None` when a check has never succeeded.
+    pub last_update_check_unix_ms: Option<u64>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             last_path: None,
-            poll_interval_ms: DEFAULT_POLL_INTERVAL.as_millis() as u64,
+            log_poll_interval_ms: DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64,
+            gpu_poll_interval_ms: DEFAULT_GPU_POLL_MS,
             chart_window_ms: DEFAULT_WINDOW_MS,
             max_requests: DEFAULT_MAX_REQUESTS,
+            temp_unit: TempUnit::DEFAULT.as_str().to_owned(),
             split_panels: SplitPanels::default(),
+            table_columns: None,
             window_state: None,
+            update_check_enabled: true,
+            update_check_period_days: crate::update_check::DEFAULT_PERIOD_DAYS,
+            last_update_check_unix_ms: None,
         }
     }
 }
 
 impl Config {
-    /// Poll interval clamped to the supported range (FR-1.2).
-    pub fn poll_interval(&self) -> Duration {
-        Duration::from_millis(self.poll_interval_ms.clamp(MIN_POLL_MS, MAX_POLL_MS))
+    /// Log file poll interval clamped to the supported range (FR-1.2).
+    pub fn log_poll_interval(&self) -> Duration {
+        Duration::from_millis(
+            self.log_poll_interval_ms
+                .clamp(MIN_LOG_POLL_MS, MAX_LOG_POLL_MS),
+        )
+    }
+
+    /// GPU poll interval clamped to the supported range (M4).
+    pub fn gpu_poll_interval(&self) -> Duration {
+        Duration::from_millis(
+            self.gpu_poll_interval_ms
+                .clamp(MIN_GPU_POLL_MS, MAX_GPU_POLL_MS),
+        )
     }
 
     /// Chart window clamped to the supported range (FR-4.2).
@@ -68,6 +106,17 @@ impl Config {
     /// Max request rows clamped to the supported range (FR-5.5).
     pub fn max_requests(&self) -> u64 {
         self.max_requests.clamp(MIN_MAX_REQUESTS, MAX_MAX_REQUESTS)
+    }
+
+    /// The GPU temperature display unit (M4); anything other than `"C"` is
+    /// Fahrenheit.
+    pub fn temp_unit(&self) -> TempUnit {
+        TempUnit::parse(&self.temp_unit)
+    }
+
+    /// The update-check period clamped to the supported range (M8).
+    pub fn update_check_period_days(&self) -> u64 {
+        clamp_period_days(self.update_check_period_days)
     }
 }
 
@@ -139,8 +188,11 @@ pub fn load_with_state(path: &Path) -> (Config, ConfigFileState) {
     if let Some(value) = object.get("last_path").and_then(|v| v.as_str()) {
         config.last_path = Some(value.to_owned());
     }
-    if let Some(value) = object.get("poll_interval_ms").and_then(|v| v.as_u64()) {
-        config.poll_interval_ms = value;
+    if let Some(value) = object.get("log_poll_interval_ms").and_then(|v| v.as_u64()) {
+        config.log_poll_interval_ms = value;
+    }
+    if let Some(value) = object.get("gpu_poll_interval_ms").and_then(|v| v.as_u64()) {
+        config.gpu_poll_interval_ms = value;
     }
     if let Some(value) = object.get("chart_window_ms").and_then(|v| v.as_u64()) {
         config.chart_window_ms = value;
@@ -148,11 +200,32 @@ pub fn load_with_state(path: &Path) -> (Config, ConfigFileState) {
     if let Some(value) = object.get("max_requests").and_then(|v| v.as_u64()) {
         config.max_requests = value;
     }
+    if let Some(value) = object.get("temp_unit").and_then(|v| v.as_str()) {
+        config.temp_unit = TempUnit::parse(value).as_str().to_owned();
+    }
     if let Some(panels) = object.get("split_panels").and_then(|v| v.as_object()) {
         config.split_panels = parse_split_panels(panels);
     }
+    if let Some(columns) = object.get("table_columns").and_then(|v| v.as_object()) {
+        config.table_columns = parse_table_columns(columns);
+    }
     if let Some(state) = object.get("window_state").and_then(|v| v.as_object()) {
         config.window_state = parse_window_state(state);
+    }
+    if let Some(value) = object.get("update_check_enabled").and_then(|v| v.as_bool()) {
+        config.update_check_enabled = value;
+    }
+    if let Some(value) = object
+        .get("update_check_period_days")
+        .and_then(|v| v.as_u64())
+    {
+        config.update_check_period_days = value;
+    }
+    if let Some(value) = object
+        .get("last_update_check_unix_ms")
+        .and_then(|v| v.as_u64())
+    {
+        config.last_update_check_unix_ms = Some(value);
     }
     (config, ConfigFileState::Valid)
 }
@@ -257,6 +330,19 @@ pub fn save(path: &Path, config: &Config) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Serialize the config writers (load-modify-save) so concurrent writers —
+/// the event-loop settings/window/column writers and the off-thread
+/// update-check writer — cannot interleave their loads and saves and lose
+/// each other's field changes. Hold the guard from the `load` through the
+/// `save`. A poisoned lock is recovered so a panicking writer cannot wedge
+/// every later config write.
+pub fn write_lock() -> std::sync::MutexGuard<'static, ()> {
+    static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,12 +357,22 @@ mod tests {
     fn defaults_match_prd() {
         let c = Config::default();
         assert_eq!(c.last_path, None);
-        assert_eq!(c.poll_interval_ms, DEFAULT_POLL_INTERVAL.as_millis() as u64);
+        assert_eq!(
+            c.log_poll_interval_ms,
+            DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64
+        );
+        assert_eq!(c.gpu_poll_interval_ms, DEFAULT_GPU_POLL_MS);
         assert_eq!(c.chart_window_ms, DEFAULT_WINDOW_MS);
         assert_eq!(c.max_requests, DEFAULT_MAX_REQUESTS);
-        assert_eq!(c.poll_interval(), DEFAULT_POLL_INTERVAL);
+        assert_eq!(c.temp_unit, "F");
+        assert_eq!(c.log_poll_interval(), DEFAULT_LOG_POLL_INTERVAL);
+        assert_eq!(
+            c.gpu_poll_interval(),
+            Duration::from_millis(DEFAULT_GPU_POLL_MS)
+        );
         assert_eq!(c.chart_window_ms(), DEFAULT_WINDOW_MS);
         assert_eq!(c.max_requests(), DEFAULT_MAX_REQUESTS);
+        assert_eq!(c.temp_unit(), TempUnit::Fahrenheit);
     }
 
     #[test]
@@ -300,7 +396,11 @@ mod tests {
         std::fs::write(&path, r#"{"last_path":"logs/x.jsonl"}"#).unwrap();
         let c = load(&path);
         assert_eq!(c.last_path, Some("logs/x.jsonl".to_owned()));
-        assert_eq!(c.poll_interval_ms, DEFAULT_POLL_INTERVAL.as_millis() as u64);
+        assert_eq!(
+            c.log_poll_interval_ms,
+            DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64
+        );
+        assert_eq!(c.gpu_poll_interval_ms, DEFAULT_GPU_POLL_MS);
         assert_eq!(c.chart_window_ms, DEFAULT_WINDOW_MS);
         assert_eq!(c.max_requests, DEFAULT_MAX_REQUESTS);
     }
@@ -313,6 +413,131 @@ mod tests {
         let c = load(&path);
         assert_eq!(c.max_requests, 250);
         assert_eq!(c.max_requests(), 250);
+    }
+
+    #[test]
+    fn load_gpu_poll_interval_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"gpu_poll_interval_ms":3000}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(c.gpu_poll_interval_ms, 3_000);
+        assert_eq!(c.gpu_poll_interval(), Duration::from_millis(3_000));
+    }
+
+    #[test]
+    fn load_gpu_poll_interval_defaults_and_normalizes() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Absent -> default.
+        std::fs::write(&path, r#"{"max_requests":250}"#).unwrap();
+        assert_eq!(load(&path).gpu_poll_interval_ms, DEFAULT_GPU_POLL_MS);
+        // Wrong type -> default.
+        std::fs::write(&path, r#"{"gpu_poll_interval_ms":"fast"}"#).unwrap();
+        assert_eq!(load(&path).gpu_poll_interval_ms, DEFAULT_GPU_POLL_MS);
+    }
+
+    #[test]
+    fn load_ignores_renamed_poll_interval_field() {
+        // The pre-rename `poll_interval_ms` key is no longer read; it is
+        // treated as an unknown field and the default is kept.
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"poll_interval_ms":200}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(
+            c.log_poll_interval_ms,
+            DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64
+        );
+    }
+
+    #[test]
+    fn load_temp_unit_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"temp_unit":"C"}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(c.temp_unit, "C");
+        assert_eq!(c.temp_unit(), TempUnit::Celsius);
+    }
+
+    #[test]
+    fn load_temp_unit_defaults_and_normalizes() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Absent -> default Fahrenheit.
+        std::fs::write(&path, r#"{"max_requests":250}"#).unwrap();
+        assert_eq!(load(&path).temp_unit, "F");
+        // Unknown value -> normalized to the default (Fahrenheit).
+        std::fs::write(&path, r#"{"temp_unit":"kelvin"}"#).unwrap();
+        assert_eq!(load(&path).temp_unit, "F");
+        // Wrong type -> default Fahrenheit.
+        std::fs::write(&path, r#"{"temp_unit":42}"#).unwrap();
+        assert_eq!(load(&path).temp_unit, "F");
+    }
+
+    #[test]
+    fn load_update_check_settings_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"update_check_enabled":false,"update_check_period_days":7,"last_update_check_unix_ms":123456789}"#,
+        )
+        .unwrap();
+        let c = load(&path);
+        assert!(!c.update_check_enabled);
+        assert_eq!(c.update_check_period_days, 7);
+        assert_eq!(c.update_check_period_days(), 7);
+        assert_eq!(c.last_update_check_unix_ms, Some(123_456_789));
+    }
+
+    #[test]
+    fn load_update_check_settings_defaults_and_normalizes() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Absent -> defaults (enabled, 3 days, never checked).
+        std::fs::write(&path, r#"{"max_requests":250}"#).unwrap();
+        let c = load(&path);
+        assert!(c.update_check_enabled);
+        assert_eq!(
+            c.update_check_period_days,
+            crate::update_check::DEFAULT_PERIOD_DAYS
+        );
+        assert_eq!(c.last_update_check_unix_ms, None);
+        // Wrong types -> defaults (the other fields are kept).
+        std::fs::write(
+            &path,
+            r#"{"max_requests":250,"update_check_enabled":"yes","update_check_period_days":"weekly","last_update_check_unix_ms":null}"#,
+        )
+        .unwrap();
+        let c = load(&path);
+        assert_eq!(c.max_requests, 250);
+        assert!(c.update_check_enabled);
+        assert_eq!(
+            c.update_check_period_days,
+            crate::update_check::DEFAULT_PERIOD_DAYS
+        );
+        assert_eq!(c.last_update_check_unix_ms, None);
+    }
+
+    #[test]
+    fn load_update_check_period_out_of_range_kept_and_clamped_on_access() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"update_check_period_days":0}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(c.update_check_period_days, 0);
+        assert_eq!(
+            c.update_check_period_days(),
+            crate::update_check::MIN_PERIOD_DAYS
+        );
+        std::fs::write(&path, r#"{"update_check_period_days":99}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(
+            c.update_check_period_days(),
+            crate::update_check::MAX_PERIOD_DAYS
+        );
     }
 
     #[test]
@@ -358,6 +583,62 @@ mod tests {
     }
 
     #[test]
+    fn load_table_columns_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"table_columns":{"window-width":1264.0,"id":56,"time":120,"model":320,"prompt":72,"compl":72,"think":72,"ttft":72,"total":72,"reason":180,"status":100}}"#,
+        )
+        .unwrap();
+        let c = load(&path);
+        assert_eq!(
+            c.table_columns,
+            Some(TableColumns {
+                window_width: 1264.0,
+                id: 56,
+                time: 120,
+                model: 320,
+                prompt: 72,
+                compl: 72,
+                think: 72,
+                ttft: 72,
+                total: 72,
+                reason: 180,
+                status: 100,
+            })
+        );
+    }
+
+    #[test]
+    fn load_table_columns_defaults_when_absent_or_malformed() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Absent -> default.
+        std::fs::write(&path, r#"{"max_requests":250}"#).unwrap();
+        assert_eq!(load(&path).table_columns, None);
+        // A missing width field -> default (the other fields are kept).
+        std::fs::write(
+            &path,
+            r#"{"max_requests":250,"table_columns":{"window-width":1280.0,"id":56}}"#,
+        )
+        .unwrap();
+        let c = load(&path);
+        assert_eq!(c.table_columns, None);
+        assert_eq!(c.max_requests, 250);
+        // A non-positive window width -> default.
+        std::fs::write(
+            &path,
+            r#"{"table_columns":{"window-width":0.0,"id":56,"time":105,"model":456,"prompt":60,"compl":60,"think":65,"ttft":65,"total":60,"reason":150,"status":75}}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path).table_columns, None);
+        // A non-object entry -> default.
+        std::fs::write(&path, r#"{"table_columns":42}"#).unwrap();
+        assert_eq!(load(&path).table_columns, None);
+    }
+
+    #[test]
     fn load_ignores_unknown_fields() {
         let (_dir, path) = temp_config();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -372,12 +653,15 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            r#"{"last_path":"logs/x.jsonl","poll_interval_ms":"fast"}"#,
+            r#"{"last_path":"logs/x.jsonl","log_poll_interval_ms":"fast"}"#,
         )
         .unwrap();
         let c = load(&path);
         assert_eq!(c.last_path, Some("logs/x.jsonl".to_owned()));
-        assert_eq!(c.poll_interval_ms, DEFAULT_POLL_INTERVAL.as_millis() as u64);
+        assert_eq!(
+            c.log_poll_interval_ms,
+            DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64
+        );
         assert_eq!(c.chart_window_ms, DEFAULT_WINDOW_MS);
     }
 
@@ -405,27 +689,61 @@ mod tests {
     fn out_of_range_values_are_clamped() {
         let c = Config {
             last_path: None,
-            poll_interval_ms: 1,
+            log_poll_interval_ms: 1,
+            gpu_poll_interval_ms: 1,
             chart_window_ms: 999_999_999,
             max_requests: 1,
+            temp_unit: "F".to_owned(),
             split_panels: SplitPanels::default(),
+            table_columns: None,
             window_state: None,
+            update_check_enabled: true,
+            update_check_period_days: 0,
+            last_update_check_unix_ms: None,
         };
-        assert_eq!(c.poll_interval(), Duration::from_millis(MIN_POLL_MS));
+        assert_eq!(
+            c.log_poll_interval(),
+            Duration::from_millis(MIN_LOG_POLL_MS)
+        );
+        assert_eq!(
+            c.gpu_poll_interval(),
+            Duration::from_millis(MIN_GPU_POLL_MS)
+        );
         assert_eq!(c.chart_window_ms(), MAX_WINDOW_MS);
         assert_eq!(c.max_requests(), MIN_MAX_REQUESTS);
+        assert_eq!(
+            c.update_check_period_days(),
+            crate::update_check::MIN_PERIOD_DAYS
+        );
 
         let c = Config {
             last_path: None,
-            poll_interval_ms: 999_999,
+            log_poll_interval_ms: 999_999,
+            gpu_poll_interval_ms: 999_999,
             chart_window_ms: 1_000,
             max_requests: 999_999,
+            temp_unit: "F".to_owned(),
             split_panels: SplitPanels::default(),
+            table_columns: None,
             window_state: None,
+            update_check_enabled: true,
+            update_check_period_days: 999,
+            last_update_check_unix_ms: None,
         };
-        assert_eq!(c.poll_interval(), Duration::from_millis(MAX_POLL_MS));
+        assert_eq!(
+            c.log_poll_interval(),
+            Duration::from_millis(MAX_LOG_POLL_MS)
+        );
+        assert_eq!(
+            c.gpu_poll_interval(),
+            Duration::from_millis(MAX_GPU_POLL_MS)
+        );
         assert_eq!(c.chart_window_ms(), MIN_WINDOW_MS);
         assert_eq!(c.max_requests(), MAX_MAX_REQUESTS);
+        assert_eq!(
+            c.update_check_period_days(),
+            crate::update_check::MAX_PERIOD_DAYS
+        );
     }
 
     #[test]
@@ -433,14 +751,20 @@ mod tests {
         let (_dir, path) = temp_config();
         let c = Config {
             last_path: Some("logs/x.jsonl".to_owned()),
-            poll_interval_ms: 100,
+            log_poll_interval_ms: 100,
+            gpu_poll_interval_ms: 3_000,
             chart_window_ms: 900_000,
             max_requests: 250,
+            temp_unit: "F".to_owned(),
             split_panels: SplitPanels {
                 charts: 0.7,
                 table: 0.3,
             },
+            table_columns: None,
             window_state: None,
+            update_check_enabled: false,
+            update_check_period_days: 7,
+            last_update_check_unix_ms: Some(1_700_000_000_000),
         };
         save(&path, &c).unwrap();
         assert_eq!(load(&path), c);
@@ -452,14 +776,20 @@ mod tests {
         save(&path, &Config::default()).unwrap();
         let c = Config {
             last_path: Some("y".to_owned()),
-            poll_interval_ms: 200,
+            log_poll_interval_ms: 200,
+            gpu_poll_interval_ms: 7_000,
             chart_window_ms: 60_000,
             max_requests: 500,
+            temp_unit: "F".to_owned(),
             split_panels: SplitPanels {
                 charts: 0.4,
                 table: 0.6,
             },
+            table_columns: None,
             window_state: None,
+            update_check_enabled: true,
+            update_check_period_days: 14,
+            last_update_check_unix_ms: Some(1_700_000_123_456),
         };
         save(&path, &c).unwrap();
         assert_eq!(load(&path), c);
@@ -557,7 +887,7 @@ mod tests {
         assert!(needs_repair(&path), "a malformed file needs repair");
         std::fs::write(&path, "[1, 2, 3]").unwrap();
         assert!(needs_repair(&path), "a non-object JSON file needs repair");
-        std::fs::write(&path, r#"{"poll_interval_ms":200}"#).unwrap();
+        std::fs::write(&path, r#"{"log_poll_interval_ms":200}"#).unwrap();
         assert!(
             !needs_repair(&path),
             "a valid object file does not need repair"

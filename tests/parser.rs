@@ -137,8 +137,11 @@ fn sample_log_server_start_spot_check() {
     assert_eq!(ss.engine.max_context, Some(240000));
     assert_eq!(ss.engine.max_concurrency, Some(2));
     assert_eq!(ss.engine.kv_cache.as_deref(), Some("fp8-e4m3-row256"));
-    assert_eq!(ss.artifact.target.as_deref(), Some("qwen3_8_27b"));
-    assert_eq!(ss.artifact.weights_id.as_deref(), Some("nvfp4"));
+    assert_eq!(ss.artifact.name.as_deref(), Some(""));
+    assert_eq!(ss.artifact.architecture.as_deref(), Some("qwen3_8_27b"));
+    assert_eq!(ss.artifact.formats, vec!["nvfp4"]);
+    assert_eq!(ss.artifact.device_object_count, Some(673));
+    assert_eq!(ss.artifact.host_object_count, Some(6));
     assert_eq!(
         ss.server.public_model_id.as_deref(),
         Some("qwen3.8-27b-nvfp4")
@@ -196,7 +199,7 @@ fn sample_log_envelopes_are_consistent() {
     let (events, skipped) = parse_all();
     assert_eq!(skipped, 0);
     for e in &events {
-        assert_eq!(e.schema_version(), Some(20));
+        assert_eq!(e.schema_version(), Some(21));
         assert!(!e.schema_too_new());
         assert_eq!(e.server_instance_id(), Some("serve-27872-1789281769048204"));
         assert!(e.timestamp_unix_ms().is_some());
