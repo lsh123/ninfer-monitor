@@ -64,13 +64,6 @@ fn status_change_does_not_shift_items() {
     let file_live = elem(&window, "StatusBar::file-text").absolute_position();
     let time_live = elem(&window, "StatusBar::time-label").absolute_position();
 
-    window.set_connection_status("Paused".into());
-    let _ = window.window().take_snapshot();
-    let file_paused = elem(&window, "StatusBar::file-text").absolute_position();
-    let time_paused = elem(&window, "StatusBar::time-label").absolute_position();
-    assert_eq!(time_live, time_paused, "timestamp shifted on pause");
-    assert_eq!(file_live, file_paused, "file name shifted on pause");
-
     window.set_connection_status("Disconnected".into());
     let _ = window.window().take_snapshot();
     let file_disc = elem(&window, "StatusBar::file-text").absolute_position();

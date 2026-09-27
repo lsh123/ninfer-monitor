@@ -37,8 +37,11 @@ server-info panel, and the status bar.
   trend indicators.
 - **Time-series charts** — four Plotters dual-axis line charts (Throughput,
   Latency, Cache %, Scheduler) with a global time-window selector
-  (1 m / 5 m / 15 m / 1 h), re-rendered at 2 Hz, with a "server restarted"
-  marker on new `server_start` events.
+  (1 m / 5 m / 15 m / 1 h), re-rendered whenever the frame could change
+  (new data, a resize, or the current time advancing a full second) — a
+  series without new data is extended with a dashed horizontal tail to the
+  current time —
+  with a "server restarted" marker on new `server_start` events.
 - **Request table** — newest-first rows (id, time, model, prompt/completion/
   thinking tokens, TTFT, total time, finish reason, status), color-coded
   (normal / slow / error), inline expandable detail with the full
@@ -47,8 +50,9 @@ server-info panel, and the status bar.
   the latest `server_start` event.
 - **Robust parsing** — malformed lines are skipped and counted; unknown events
   and fields are ignored (forward compatible with newer schema versions).
-- **Settings & persistence** — poll interval, max requests, chart window, last
-  log path, window geometry, and splitter fractions persisted to
+- **Settings & persistence** — log file poll interval, GPU poll interval, max
+  requests, chart window, last log path, window geometry, and splitter
+  fractions persisted to
   `$HOME/.ninfer-monitor/config.json`; the app never crashes on a missing or
   malformed config.
 - **Cross-platform** — Windows, Linux, macOS from a single codebase.
@@ -80,15 +84,13 @@ or use the repo wrapper: `cmd /c vs-cargo.bat build`.
 ## Usage
 
 ```
-ninfer-monitor [path] [--poll <ms>] [--config <path>]
+ninfer-monitor [--config <path>]
 ```
 
-- `[path]` — log file to open (overrides the persisted `last_path`).
-- `--poll <ms>` — poll interval override (clamped to 100–5000 ms).
 - `--config <path>` — use a different config file location.
 
-Controls: **Open file…**, **Pause/Resume**, **Clear**, the chart
-time-window selector, and **Settings** (poll interval, max requests, About).
+Controls: the chart time-window selector and **Settings** (log file poll
+interval, GPU poll interval, max requests, About).
 
 ## License
 

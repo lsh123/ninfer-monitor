@@ -249,22 +249,6 @@ fn new_from_end_skips_existing_content() {
 }
 
 #[test]
-fn paused_reports_paused_status() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("log.jsonl");
-    write_lines(&path, &["a"]);
-
-    let mut tail = Tail::new(&path, FAST);
-    assert_eq!(tail.poll().status, TailStatus::Live);
-
-    tail.set_paused(true);
-    assert_eq!(tail.poll().status, TailStatus::Paused);
-
-    tail.set_paused(false);
-    assert_eq!(tail.poll().status, TailStatus::Live);
-}
-
-#[test]
 fn last_event_time_tracks_new_lines() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("log.jsonl");

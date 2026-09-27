@@ -4,7 +4,7 @@
 //
 // Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
 
-use crate::parser::{MemorySegment, ServerStartEvent};
+use crate::parser::ServerStartEvent;
 use crate::store::Store;
 
 /// Shown for missing values (FR-3.3 convention).
@@ -16,8 +16,6 @@ pub struct ServerInfoSnapshot {
     pub summary: String,
     pub model: String,
     pub engine: String,
-    pub gpu: String,
-    pub memory: String,
     pub server: String,
 }
 
@@ -30,8 +28,6 @@ pub fn snapshot(store: &Store) -> ServerInfoSnapshot {
             summary: "No server info yet".to_owned(),
             model: NO_DATA.to_owned(),
             engine: NO_DATA.to_owned(),
-            gpu: NO_DATA.to_owned(),
-            memory: NO_DATA.to_owned(),
             server: NO_DATA.to_owned(),
         };
     };
@@ -39,8 +35,6 @@ pub fn snapshot(store: &Store) -> ServerInfoSnapshot {
         summary: summary(s),
         model: model_line(s),
         engine: engine_line(s),
-        gpu: gpu_line(s),
-        memory: memory_line(s),
         server: server_line(s),
     }
 }
@@ -48,7 +42,7 @@ pub fn snapshot(store: &Store) -> ServerInfoSnapshot {
 /// True when the panel must be (re)applied: nothing was applied yet or the
 /// current snapshot differs from the last-applied one. Comparing snapshots
 /// instead of a `server_start` counter keeps the panel in sync when the
-/// store is cleared or replaced (M11 Clear / Open file).
+/// store is reset (server restart) or replaced (Open file).
 pub fn needs_update(last: &Option<ServerInfoSnapshot>, current: &ServerInfoSnapshot) -> bool {
     last.as_ref() != Some(current)
 }
@@ -60,8 +54,6 @@ macro_rules! apply_server_info {
         $window.set_server_info_summary(s.summary.as_str().into());
         $window.set_server_info_model(s.model.as_str().into());
         $window.set_server_info_engine(s.engine.as_str().into());
-        $window.set_server_info_gpu(s.gpu.as_str().into());
-        $window.set_server_info_memory(s.memory.as_str().into());
         $window.set_server_info_server(s.server.as_str().into());
     }};
 }
@@ -84,15 +76,33 @@ fn summary(s: &ServerStartEvent) -> String {
     join_or_no_data(parts)
 }
 
+/// The schema 21 artifact label: the artifact name (or the architecture
+/// when the name is empty) with the weight formats in parentheses.
+fn artifact_label(s: &ServerStartEvent) -> Option<String> {
+    let label = s
+        .artifact
+        .name
+        .clone()
+        .filter(|name| !name.is_empty())
+        .or_else(|| s.artifact.architecture.clone())?;
+    let formats = s.artifact.formats.join(", ");
+    if formats.is_empty() {
+        Some(label)
+    } else {
+        Some(format!("{label} ({formats})"))
+    }
+}
+
 /// The display model id: `server.public_model_id`, then
-/// `engine.public_model_id`, then `engine.model_id`, then
-/// `artifact.target` + `artifact.weights_id`.
+/// `engine.public_model_id`, then `engine.model_id`, then the schema 21
+/// artifact label, then `artifact.target` + `artifact.weights_id`.
 fn model_id(s: &ServerStartEvent) -> Option<String> {
     s.server
         .public_model_id
         .clone()
         .or_else(|| s.engine.public_model_id.clone())
         .or_else(|| s.engine.model_id.clone())
+        .or_else(|| artifact_label(s))
         .or_else(|| match (&s.artifact.target, &s.artifact.weights_id) {
             (Some(target), Some(weights_id)) => Some(format!("{target}-{weights_id}")),
             _ => None,
@@ -110,7 +120,9 @@ fn kv_label(s: &ServerStartEvent) -> String {
 
 fn model_line(s: &ServerStartEvent) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(target) = &s.artifact.target {
+    if let Some(label) = artifact_label(s) {
+        parts.push(label);
+    } else if let Some(target) = &s.artifact.target {
         parts.push(match &s.artifact.weights_id {
             Some(weights_id) => format!("{target} ({weights_id})"),
             None => target.clone(),
@@ -159,62 +171,6 @@ fn engine_line(s: &ServerStartEvent) -> String {
         parts.push(format!("prefix reuse {}", bool_str(prefix_reuse)));
     }
     join_or_no_data(parts)
-}
-
-// TODO: display `environment.cuda_compile_version` (parsed but unused).
-fn gpu_line(s: &ServerStartEvent) -> String {
-    let env = &s.environment;
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(gpu) = &env.gpu_name {
-        parts.push(gpu.clone());
-    }
-    match (env.compute_capability_major, env.compute_capability_minor) {
-        (Some(major), Some(minor)) => parts.push(format!("SM {major}.{minor}")),
-        (Some(major), None) => parts.push(format!("SM {major}")),
-        (None, _) => {}
-    }
-    if let Some(driver) = &env.cuda_driver_version {
-        parts.push(format!("CUDA driver {driver}"));
-    }
-    if let Some(runtime) = &env.cuda_runtime_version {
-        parts.push(format!("runtime {runtime}"));
-    }
-    if let Some(memory) = env.total_device_memory_bytes {
-        parts.push(fmt_bytes(memory));
-    }
-    join_or_no_data(parts)
-}
-
-// TODO: display `memory.host_kv_capacity_bytes` and
-// `MemorySegment.peak_used_bytes` (parsed but unused).
-fn memory_line(s: &ServerStartEvent) -> String {
-    let m = &s.memory;
-    let mut parts: Vec<String> = Vec::new();
-    if m.weights.used_bytes.is_some() || m.weights.capacity_bytes.is_some() {
-        parts.push(format!("weights {}", segment(&m.weights)));
-    }
-    if m.sequence.used_bytes.is_some() || m.sequence.capacity_bytes.is_some() {
-        parts.push(format!("KV {}", segment(&m.sequence)));
-    }
-    if m.workspace.used_bytes.is_some() || m.workspace.capacity_bytes.is_some() {
-        parts.push(format!("workspace {}", segment(&m.workspace)));
-    }
-    if let Some(free) = m.available_after_weights_bytes {
-        parts.push(format!("{} free", fmt_bytes(free)));
-    }
-    join_or_no_data(parts)
-}
-
-fn segment(seg: &MemorySegment) -> String {
-    let used = seg
-        .used_bytes
-        .map(fmt_gib)
-        .unwrap_or_else(|| NO_DATA.to_owned());
-    let capacity = seg
-        .capacity_bytes
-        .map(fmt_gib)
-        .unwrap_or_else(|| NO_DATA.to_owned());
-    format!("{used}/{capacity} GiB")
 }
 
 fn server_line(s: &ServerStartEvent) -> String {
@@ -299,14 +255,19 @@ mod tests {
         parse_line(raw.as_bytes()).unwrap()
     }
 
+    fn server_start_line_v21(ts: u64, body: &str) -> ParsedEvent {
+        let raw = format!(
+            r#"{{"artifact_type":"ninfer_serve_request_log","schema_version":21,"server_instance_id":"s","timestamp_unix_ms":{ts},"event":"server_start",{body}}}"#
+        );
+        parse_line(raw.as_bytes()).unwrap()
+    }
+
     #[test]
     fn empty_store_snapshot_shows_no_data() {
         let s = snapshot(&Store::new());
         assert_eq!(s.summary, "No server info yet");
         assert_eq!(s.model, NO_DATA);
         assert_eq!(s.engine, NO_DATA);
-        assert_eq!(s.gpu, NO_DATA);
-        assert_eq!(s.memory, NO_DATA);
         assert_eq!(s.server, NO_DATA);
     }
 
@@ -324,14 +285,6 @@ mod tests {
         assert_eq!(
             s.engine,
             "KV fp8-e4m3-row256 · capacity 240 000 · max context 240 000 · concurrency 2 · prefill chunk 2 048 · spec mtp · cuda graph on · prefix reuse on"
-        );
-        assert_eq!(
-            s.gpu,
-            "NVIDIA GeForce RTX 5090 · SM 12.0 · CUDA driver 13.4 · runtime 13.4 · 31.8 GiB"
-        );
-        assert_eq!(
-            s.memory,
-            "weights 19.7/19.7 GiB · KV 8.5/8.5 GiB · workspace 0.0/0.3 GiB · 10.5 GiB free"
         );
         assert_eq!(
             s.server,
@@ -356,8 +309,6 @@ mod tests {
             s.engine,
             "KV bf16 · capacity 120 000 · max context 120 000 · concurrency 4"
         );
-        assert_eq!(s.gpu, "NVIDIA GeForce RTX 4090");
-        assert_eq!(s.memory, "8.0 GiB free");
         assert_eq!(s.server, "serve-2");
         assert_eq!(s.model, NO_DATA);
     }
@@ -417,8 +368,6 @@ mod tests {
         assert_eq!(s.summary, NO_DATA);
         assert_eq!(s.model, NO_DATA);
         assert_eq!(s.engine, NO_DATA);
-        assert_eq!(s.gpu, NO_DATA);
-        assert_eq!(s.memory, NO_DATA);
         assert_eq!(s.server, "s");
     }
 
@@ -481,16 +430,6 @@ mod tests {
     }
 
     #[test]
-    fn gpu_line_compute_capability_major_only() {
-        let mut store = Store::new();
-        store.apply(&server_start_line(
-            1_000,
-            r#""environment":{"gpu_name":"G","compute_capability_major":9}"#,
-        ));
-        assert_eq!(snapshot(&store).gpu, "G · SM 9");
-    }
-
-    #[test]
     fn server_line_host_without_port() {
         let mut store = Store::new();
         store.apply(&server_start_line(1_000, r#""server":{"host":"10.0.0.5"}"#));
@@ -515,20 +454,51 @@ mod tests {
     }
 
     #[test]
-    fn memory_line_partial_segment_shows_no_data_used() {
-        let mut store = Store::new();
-        store.apply(&server_start_line(
-            1_000,
-            r#""memory":{"weights":{"capacity_bytes":8589934592}}"#,
-        ));
-        assert_eq!(snapshot(&store).memory, "weights —/8.0 GiB");
-    }
-
-    #[test]
     fn model_line_target_without_weights_id() {
         let mut store = Store::new();
         store.apply(&server_start_line(1_000, r#""artifact":{"target":"d"}"#));
         assert_eq!(snapshot(&store).model, "d");
+    }
+
+    #[test]
+    fn model_id_prefers_public_model_id_over_artifact_name() {
+        let mut store = Store::new();
+        store.apply(&server_start_line_v21(
+            1_000,
+            r#""artifact":{"name":"qwen3_8_27b_nvfp4","formats":["nvfp4"]},"server":{"public_model_id":"qwen3.8-27b-nvfp4"}"#,
+        ));
+        let s = snapshot(&store);
+        assert_eq!(s.summary, "qwen3.8-27b-nvfp4");
+    }
+
+    #[test]
+    fn model_id_falls_back_to_artifact_name_and_formats() {
+        let mut store = Store::new();
+        store.apply(&server_start_line_v21(
+            1_000,
+            r#""artifact":{"name":"qwen3_8_27b_nvfp4","architecture":"qwen3_8_27b","formats":["nvfp4","bf16"],"size_bytes":1073741824}"#,
+        ));
+        let s = snapshot(&store);
+        assert_eq!(
+            s.summary, "qwen3_8_27b_nvfp4 (nvfp4, bf16)",
+            "the artifact name with formats must win"
+        );
+        assert_eq!(s.model, "qwen3_8_27b_nvfp4 (nvfp4, bf16) · 1.0 GiB");
+    }
+
+    #[test]
+    fn model_id_falls_back_to_architecture_when_name_empty() {
+        let mut store = Store::new();
+        store.apply(&server_start_line_v21(
+            1_000,
+            r#""artifact":{"name":"","architecture":"qwen3_8_27b","formats":["nvfp4"],"size_bytes":23719496192,"load_seconds":9.6972125,"upload_seconds":6.8405596}"#,
+        ));
+        let s = snapshot(&store);
+        assert_eq!(s.summary, "qwen3_8_27b (nvfp4)");
+        assert_eq!(
+            s.model,
+            "qwen3_8_27b (nvfp4) · 22.1 GiB · load 9.7 s · upload 6.8 s"
+        );
     }
 
     #[test]

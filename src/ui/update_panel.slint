@@ -1,0 +1,155 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+import { DarkButton } from "dark_button.slint";
+
+export component UpdatePanel inherits Rectangle {
+    in property <string> version: "";
+    in property <bool> downloading: false;
+    in property <string> download-error: "";
+    in property <bool> show-ok: true;
+
+    callback close();
+    callback install();
+    callback release-notes();
+
+    background: #252526;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #3c3c3c;
+    height: content-layout.preferred-height;
+
+    click-blocker := TouchArea {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    notes-measure := Text {
+        text: "Release notes";
+        font-size: 12px;
+        visible: false;
+    }
+
+    scope := FocusScope {
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => {
+                root.close();
+            }
+        }
+
+        content-layout := VerticalLayout {
+            padding: 48px;
+            spacing: 12px;
+
+            Text {
+                text: "New version available";
+                font-size: 18px;
+                font-weight: 700;
+                color: #e0e0e0;
+            }
+
+            Rectangle {
+                height: 16px;
+            }
+
+            if !root.downloading && root.download-error == "": question-text := Text {
+                text: "Do you want to install new release version " + root.version + "?";
+                font-size: 14px;
+                color: #e0e0e0;
+                wrap: word-wrap;
+            }
+
+            if root.downloading || root.download-error != "": status-text := Text {
+                text: root.downloading
+                    ? "Downloading version " + root.version + "..."
+                    : root.download-error;
+                font-size: 14px;
+                color: root.downloading ? #e0e0e0 : #f44336;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                height: 16px;
+            }
+
+            notes-row := HorizontalLayout {
+                spacing: 0px;
+
+                notes-link := Rectangle {
+                    width: notes-measure.width;
+                    height: notes-measure.height + 2px;
+
+                    notes-text := Text {
+                        x: 0;
+                        y: 0;
+                        text: "Release notes";
+                        font-size: 12px;
+                        color: #4fc3f7;
+                    }
+
+                    notes-underline := Rectangle {
+                        x: 0;
+                        y: notes-measure.height;
+                        width: notes-measure.width;
+                        height: 1px;
+                        background: #4fc3f7;
+                    }
+
+                    ta := TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => {
+                            root.release-notes();
+                        }
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+
+            Rectangle {
+                height: 16px;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 8px;
+
+                if root.show-ok: btn-ok := DarkButton {
+                    text: "OK";
+                    width: 90px;
+                    height: 24px;
+                    disabled: root.downloading;
+                    clicked => {
+                        root.install();
+                    }
+                }
+
+                btn-cancel := DarkButton {
+                    text: "Cancel";
+                    width: 90px;
+                    height: 24px;
+                    clicked => {
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+
+    focus-timer := Timer {
+        interval: 1ms;
+        running: true;
+        triggered => {
+            self.stop();
+            scope.focus();
+        }
+    }
+}

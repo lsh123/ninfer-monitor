@@ -6,12 +6,15 @@
 
 import { AboutPanel } from "about_panel.slint";
 import { DarkButton } from "dark_button.slint";
+import { GpuRow, GpuDevice } from "gpu_row.slint";
+import { LineEdit } from "std-widgets.slint";
 import { MetricWidget } from "metric_widget.slint";
 import { RequestTable, RequestRow } from "request_table.slint";
 import { ServerInfoPanel } from "server_info_panel.slint";
 import { SettingsPanel } from "settings_panel.slint";
 import { Splitter } from "splitter.slint";
 import { StatusBar } from "status_bar.slint";
+import { UpdatePanel } from "update_panel.slint";
 
 export component MainWindow inherits Window {
     title: "NInferMonitor";
@@ -29,8 +32,6 @@ export component MainWindow inherits Window {
     in property <string> last-event: "—";
     in property <string> errors-text: "Errors: 0";
     in property <string> skipped-text: "Skipped 0";
-    in property <bool> paused: false;
-    in property <bool> controls-enabled: true;
     in property <string> schema-warning: "";
 
     in property <string> kpi-decode-value: "—";
@@ -46,23 +47,54 @@ export component MainWindow inherits Window {
     in property <int> kpi-waiting-trend: 0;
 
     in property <string> kpi-ttft-value: "—";
+    in property <string> kpi-ttft-unit: "";
     in property <int> kpi-ttft-trend: 0;
 
     in property <string> kpi-decode-lat-value: "—";
+    in property <string> kpi-decode-lat-unit: "";
     in property <int> kpi-decode-lat-trend: 0;
 
     in property <string> kpi-cache-value: "—";
+    in property <string> kpi-cache-unit: "";
     in property <int> kpi-cache-trend: 0;
 
     in property <string> kpi-spec-value: "—";
+    in property <string> kpi-spec-unit: "";
     in property <int> kpi-spec-trend: 0;
 
     in property <bool> settings-visible: false;
-    in-out property <int> settings-poll-ms: 500;
+    in-out property <int> settings-log-poll-ms: 500;
+    in-out property <int> settings-gpu-poll-ms: 5000;
     in-out property <int> settings-max-requests: 1000;
+    in-out property <string> settings-file: "";
+    in-out property <string> settings-temp-unit: "F";
+    in-out property <bool> settings-update-check-enabled: true;
+    in-out property <int> settings-update-check-days: 3;
+    in property <bool> nvidia-popup-visible: false;
+    in property <string> nvidia-popup-status: "";
 
     in property <bool> about-visible: false;
     in property <string> about-version: "";
+
+    // Update-check state (M8), owned by main.rs: `update-available` shows the
+    // toolbar button, `update-visible` shows the "New version available"
+    // dialog with `update-version`, the release notes URL, and the download
+    // state (`update-downloading`, `update-download-error`);
+    // `update-ok-visible` hides the OK button where no installer exists
+    // (non-Windows).
+    in property <bool> update-available: false;
+    in property <bool> update-visible: false;
+    in property <string> update-version: "";
+    in property <string> update-release-url: "";
+    in property <bool> update-downloading: false;
+    in property <string> update-download-error: "";
+    in property <bool> update-ok-visible: true;
+
+    in property <bool> startup-visible: false;
+    in-out property <string> startup-file: "";
+    in property <bool> startup-start-enabled: false;
+    in property <string> startup-version: "";
+    in property <string> startup-message: "";
 
     // Chart window (FR-7.1); owned by main.rs (`ChartState::window_ms`) and
     // mirrored here by the window-changed handler.
@@ -75,11 +107,25 @@ export component MainWindow inherits Window {
     in property <float> charts-frac: 0.5;
     in property <float> table-frac: 0.5;
 
-    property <image> icon-open: @image-url("icons/open_folder.svg");
-    property <image> icon-pause: @image-url("icons/pause.svg");
-    property <image> icon-play: @image-url("icons/play.svg");
-    property <image> icon-trash: @image-url("icons/trash.svg");
+    // The request-table column widths (M7), in the header row's order; owned
+    // by main.rs and mirrored here. The `Model` column is the flex column:
+    // main.rs rebalances it to the window width so the columns always fill
+    // the table.
+    in property <length> col-id: 40px;
+    in property <length> col-time: 105px;
+    in property <length> col-model: 456px;
+    in property <length> col-prompt: 60px;
+    in property <length> col-compl: 60px;
+    in property <length> col-think: 65px;
+    in property <length> col-ttft: 65px;
+    in property <length> col-total: 60px;
+    in property <length> col-reason: 150px;
+    in property <length> col-status: 75px;
+
     property <image> icon-settings: @image-url("icons/gear.svg");
+    property <image> icon-open: @image-url("icons/open_folder.svg");
+    property <image> icon-play: @image-url("icons/play.svg");
+    property <image> icon-update: @image-url("icons/update.svg");
 
     in property <image> chart-throughput-image;
     in property <image> chart-latency-image;
@@ -98,6 +144,7 @@ export component MainWindow inherits Window {
     out property <length> file-full-width: status-bar.file-full-width;
     out property <length> file-available: status-bar.file-available;
 
+    in property <[GpuDevice]> gpu-devices;
     in property <[RequestRow]> request-rows;
     in property <length> table-content-height: 0px;
     in-out property <length> table-scroll-y;
@@ -106,23 +153,30 @@ export component MainWindow inherits Window {
     in property <string> server-info-summary: "No server info yet";
     in property <string> server-info-model: "—";
     in property <string> server-info-engine: "—";
-    in property <string> server-info-gpu: "—";
-    in property <string> server-info-memory: "—";
     in property <string> server-info-server: "—";
 
     callback tick();
-    callback open-file();
-    callback pause-resume();
-    callback clear();
     callback row-clicked(id: string);
     callback settings();
-    callback settings-save(poll-ms: int, max-requests: int);
+    callback settings-save(log-poll-ms: int, gpu-poll-ms: int, max-requests: int, file: string, temp-unit: string, update-check-enabled: bool, update-check-days: int);
     callback settings-close();
+    callback settings-open-file();
+    callback nvidia-popup();
     callback about();
     callback about-close();
+    callback update-clicked();
+    callback update-close();
+    callback update-install();
+    callback release-notes();
     callback window-changed(ms: int);
     callback split-changed(which: int, frac: float);
     callback split-released(which: int, frac: float);
+    callback column-changed(slider: int, new-left: float);
+    callback column-released(slider: int);
+    callback startup-start();
+    callback startup-close();
+    callback startup-open-file();
+    callback startup-file-edited(text: string);
 
     Timer {
         interval: 250ms;
@@ -145,47 +199,10 @@ export component MainWindow inherits Window {
                 padding: 8px;
                 spacing: 12px;
 
-                btn-open := DarkButton {
-                    text: "Open file…";
-                    icon: root.icon-open;
-                    has-icon: true;
-                    width: 90px;
-                    clicked => {
-                        root.open-file();
-                    }
-                }
-
-                btn-pause := DarkButton {
-                    text: root.paused ? "Resume" : "Pause";
-                    icon: root.paused ? root.icon-play : root.icon-pause;
-                    has-icon: true;
-                    width: 90px;
-                    disabled: !root.controls-enabled;
-                    clicked => {
-                        root.pause-resume();
-                    }
-                }
-
-                btn-clear := DarkButton {
-                    text: "Clear";
-                    icon: root.icon-trash;
-                    has-icon: true;
-                    width: 90px;
-                    disabled: !root.controls-enabled;
-                    clicked => {
-                        root.clear();
-                    }
-                }
-
-                Rectangle {
-                    width: 72px;
-                }
-
                 win-1m := DarkButton {
                     text: "1m";
                     width: 36px;
                     selected: root.chart-window-ms == 60000;
-                    disabled: !root.controls-enabled;
                     clicked => {
                         root.window-changed(60000);
                     }
@@ -195,7 +212,6 @@ export component MainWindow inherits Window {
                     text: "5m";
                     width: 36px;
                     selected: root.chart-window-ms == 300000;
-                    disabled: !root.controls-enabled;
                     clicked => {
                         root.window-changed(300000);
                     }
@@ -205,7 +221,6 @@ export component MainWindow inherits Window {
                     text: "15m";
                     width: 36px;
                     selected: root.chart-window-ms == 900000;
-                    disabled: !root.controls-enabled;
                     clicked => {
                         root.window-changed(900000);
                     }
@@ -215,7 +230,6 @@ export component MainWindow inherits Window {
                     text: "30m";
                     width: 36px;
                     selected: root.chart-window-ms == 1800000;
-                    disabled: !root.controls-enabled;
                     clicked => {
                         root.window-changed(1800000);
                     }
@@ -225,7 +239,6 @@ export component MainWindow inherits Window {
                     text: "1h";
                     width: 36px;
                     selected: root.chart-window-ms == 3600000;
-                    disabled: !root.controls-enabled;
                     clicked => {
                         root.window-changed(3600000);
                     }
@@ -233,6 +246,18 @@ export component MainWindow inherits Window {
 
                 Rectangle {
                     horizontal-stretch: 1;
+                }
+
+                // Visible only when the background check found a newer release
+                // (M8); it sits immediately left of the settings button.
+                if root.update-available: btn-update := DarkButton {
+                    icon: root.icon-update;
+                    has-icon: true;
+                    accessible-text: "Update available";
+                    width: 24px;
+                    clicked => {
+                        root.update-clicked();
+                    }
                 }
 
                 btn-settings := DarkButton {
@@ -306,13 +331,15 @@ export component MainWindow inherits Window {
                             y: 0;
                             width: (parent.width - 8px) / 2;
                             height: parent.height;
-                            title: "Latency (ms)";
+                            title: "Latency";
                             left-label: "TTFT";
                             left-value: root.kpi-ttft-value;
+                            left-unit: root.kpi-ttft-unit;
                             left-trend: root.kpi-ttft-trend;
                             left-up-is-good: false;
                             right-label: "Per-token lat";
                             right-value: root.kpi-decode-lat-value;
+                            right-unit: root.kpi-decode-lat-unit;
                             right-trend: root.kpi-decode-lat-trend;
                             right-up-is-good: false;
                             chart-image: root.chart-latency-image;
@@ -327,13 +354,15 @@ export component MainWindow inherits Window {
                             y: 0;
                             width: (parent.width - 8px) / 2;
                             height: parent.height;
-                            title: "Cache (%)";
+                            title: "Cache";
                             left-label: "Cache hit";
                             left-value: root.kpi-cache-value;
+                            left-unit: root.kpi-cache-unit;
                             left-trend: root.kpi-cache-trend;
                             left-up-is-good: true;
                             right-label: "Spec. accept";
                             right-value: root.kpi-spec-value;
+                            right-unit: root.kpi-spec-unit;
                             right-trend: root.kpi-spec-trend;
                             right-up-is-good: true;
                             chart-image: root.chart-cache-image;
@@ -356,6 +385,13 @@ export component MainWindow inherits Window {
                             right-up-is-good: false;
                             chart-image: root.chart-scheduler-image;
                         }
+                    }
+
+                    // One row per GPU (M4); hidden when NVML is unavailable
+                    // (the `gpu-devices` model is then empty).
+                    for gpu in root.gpu-devices: GpuRow {
+                        vertical-stretch: 1;
+                        device: gpu;
                     }
                 }
             }
@@ -395,8 +431,24 @@ export component MainWindow inherits Window {
                     content-height: root.table-content-height;
                     scroll-y <=> root.table-scroll-y;
                     follow <=> root.table-follow;
+                    col-id: root.col-id;
+                    col-time: root.col-time;
+                    col-model: root.col-model;
+                    col-prompt: root.col-prompt;
+                    col-compl: root.col-compl;
+                    col-think: root.col-think;
+                    col-ttft: root.col-ttft;
+                    col-total: root.col-total;
+                    col-reason: root.col-reason;
+                    col-status: root.col-status;
                     row-clicked(id) => {
                         root.row-clicked(id);
+                    }
+                    column-changed(slider, new-left) => {
+                        root.column-changed(slider, new-left);
+                    }
+                    column-released(slider) => {
+                        root.column-released(slider);
                     }
                 }
 
@@ -428,8 +480,6 @@ export component MainWindow inherits Window {
                     summary: root.server-info-summary;
                     model: root.server-info-model;
                     engine: root.server-info-engine;
-                    gpu: root.server-info-gpu;
-                    memory: root.server-info-memory;
                     server: root.server-info-server;
                 }
             }
@@ -443,6 +493,136 @@ export component MainWindow inherits Window {
             last-event: root.last-event;
             errors-text: root.errors-text;
             skipped-text: root.skipped-text;
+        }
+    }
+
+    if root.startup-visible: startup-screen := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #1e1e1e;
+
+        startup-panel := Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 560px;
+            height: 320px;
+            background: #252526;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #3c3c3c;
+
+            scope := FocusScope {
+                KeyBinding {
+                    keys: @keys(Escape);
+                    activated => {
+                        root.startup-close();
+                    }
+                }
+
+                VerticalLayout {
+                    padding: 48px;
+                    spacing: 12px;
+
+                    header-row := HorizontalLayout {
+                        spacing: 12px;
+                        cross-axis-alignment: center;
+
+                        startup-icon := Image {
+                            source: @image-url("icons/app_icon.png");
+                            width: 64px;
+                            height: 64px;
+                        }
+
+                        header-texts := VerticalLayout {
+                            spacing: 12px;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: "Welcome to NInferMonitor (v" + root.startup-version + ")!";
+                                font-size: 18px;
+                                font-weight: 700;
+                                color: #e0e0e0;
+                            }
+
+                            Text {
+                                text: root.startup-message;
+                                font-size: 14px;
+                                color: #9e9e9e;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 16px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        cross-axis-alignment: center;
+
+                        startup-file-input := LineEdit {
+                            horizontal-stretch: 1;
+                            text <=> root.startup-file;
+                            placeholder-text: "Path to server.requests.jsonl";
+                            edited(text) => {
+                                root.startup-file-edited(text);
+                            }
+                        }
+
+                        startup-btn-open := DarkButton {
+                            text: "Open File...";
+                            icon: root.icon-open;
+                            has-icon: true;
+                            width: 110px;
+                            height: 24px;
+                            clicked => {
+                                root.startup-open-file();
+                            }
+                        }
+                    }
+
+                    startup-spacer := Rectangle {
+                        vertical-stretch: 1;
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+
+                        startup-btn-start := DarkButton {
+                            text: "Start";
+                            icon: root.icon-play;
+                            has-icon: true;
+                            width: 90px;
+                            height: 24px;
+                            disabled: !root.startup-start-enabled;
+                            clicked => {
+                                root.startup-start();
+                            }
+                        }
+
+                        startup-btn-close := DarkButton {
+                            text: "Close";
+                            width: 90px;
+                            height: 24px;
+                            clicked => {
+                                root.startup-close();
+                            }
+                        }
+                    }
+                }
+            }
+
+            focus-timer := Timer {
+                interval: 1ms;
+                running: true;
+                triggered => {
+                    self.stop();
+                    scope.focus();
+                }
+            }
         }
     }
 
@@ -463,12 +643,26 @@ export component MainWindow inherits Window {
     if root.settings-visible: settings-panel := SettingsPanel {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 380px;
-        height: parent.height * 2 / 3;
-        poll-ms <=> root.settings-poll-ms;
+        width: 570px;
+        log-poll-ms <=> root.settings-log-poll-ms;
+        gpu-poll-ms <=> root.settings-gpu-poll-ms;
         max-requests <=> root.settings-max-requests;
+        file <=> root.settings-file;
+        temp-unit <=> root.settings-temp-unit;
+        update-check-enabled <=> root.settings-update-check-enabled;
+        update-check-days <=> root.settings-update-check-days;
+        nvidia-popup-visible: root.nvidia-popup-visible;
+        nvidia-popup-status: root.nvidia-popup-status;
         save() => {
-            root.settings-save(root.settings-poll-ms, root.settings-max-requests);
+            root.settings-save(
+                root.settings-log-poll-ms,
+                root.settings-gpu-poll-ms,
+                root.settings-max-requests,
+                root.settings-file,
+                root.settings-temp-unit,
+                root.settings-update-check-enabled,
+                root.settings-update-check-days
+            );
         }
         close() => {
             root.settings-close();
@@ -482,6 +676,12 @@ export component MainWindow inherits Window {
             } else {
                 root.settings-close();
             }
+        }
+        open-file() => {
+            root.settings-open-file();
+        }
+        nvidia-popup() => {
+            root.nvidia-popup();
         }
     }
 
@@ -503,10 +703,42 @@ export component MainWindow inherits Window {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         width: 380px;
-        height: parent.height * 2 / 3;
         version: root.about-version;
         close() => {
             root.about-close();
+        }
+    }
+
+    if root.update-visible: update-backdrop := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #000000aa;
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.update-close();
+            }
+        }
+    }
+
+    if root.update-visible: update-panel := UpdatePanel {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 420px;
+        version: root.update-version;
+        downloading: root.update-downloading;
+        download-error: root.update-download-error;
+        show-ok: root.update-ok-visible;
+        close() => {
+            root.update-close();
+        }
+        install() => {
+            root.update-install();
+        }
+        release-notes() => {
+            root.release-notes();
         }
     }
 }

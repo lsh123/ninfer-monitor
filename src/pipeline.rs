@@ -21,15 +21,12 @@ pub const PUSH_INTERVAL: Duration = Duration::from_millis(250);
 /// A snapshot of the store plus tail status, pushed to the UI over a channel.
 ///
 /// The store is a full clone: the UI thread never shares mutable state with
-/// the parse thread (PRD §11). `clear_count` is a generation counter bumped
-/// on every Clear (FR-7.1) so the UI can tell pre-clear snapshots from
-/// post-clear ones.
+/// the parse thread (PRD §11).
 #[derive(Debug, Clone)]
 pub struct StoreUpdate {
     pub store: Store,
     pub status: TailStatus,
     pub last_event_time: Option<SystemTime>,
-    pub clear_count: u64,
 }
 
 /// Folds tail messages into a store.
@@ -41,7 +38,6 @@ pub struct Processor {
     store: Store,
     status: TailStatus,
     last_event_time: Option<SystemTime>,
-    clear_count: u64,
 }
 
 impl Processor {
@@ -57,7 +53,6 @@ impl Processor {
             store: Store::with_max_requests(max_requests),
             status: TailStatus::Disconnected,
             last_event_time: None,
-            clear_count: 0,
         }
     }
 
@@ -89,20 +84,6 @@ impl Processor {
         self.last_event_time
     }
 
-    pub fn clear_count(&self) -> u64 {
-        self.clear_count
-    }
-
-    /// Reset the in-memory state (FR-7.1 "Clear"): the store, the last-event
-    /// time, and a generation bump so the UI can recognize the post-clear
-    /// snapshot. The tail status is kept: clearing data does not change the
-    /// connection state.
-    pub fn clear(&mut self) {
-        self.store.clear();
-        self.last_event_time = None;
-        self.clear_count += 1;
-    }
-
     /// Clone the store to hand to the UI thread. The clone is the cost of the
     /// owned-snapshot design (the `Store` crosses the thread boundary as an
     /// owned value, so it cannot be shared), but it is bounded: a snapshot is
@@ -113,7 +94,6 @@ impl Processor {
             store: self.store.clone(),
             status: self.status,
             last_event_time: self.last_event_time,
-            clear_count: self.clear_count,
         }
     }
 }
@@ -122,39 +102,6 @@ impl Default for Processor {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Commands the UI can send to the parse thread (FR-7.1).
-enum Command {
-    Clear,
-}
-
-/// How the UI should treat a snapshot relative to a pending Clear (FR-7.1).
-pub enum ClearGate {
-    /// Apply the snapshot fully (view + status bar).
-    Apply,
-    /// Skip the snapshot: it was produced before the Clear.
-    Skip,
-    /// Refresh the status bar only (the view is frozen while paused).
-    StatusOnly,
-}
-
-/// Decide how the UI should treat `update` given its clear state.
-///
-/// `pending` is true between the UI issuing a Clear and seeing the
-/// post-clear snapshot; `seen` is the highest `clear_count` the UI has
-/// applied. A snapshot is only fresh if its `clear_count` exceeds `seen`.
-/// While paused the live view is frozen (FR-7.1): a stale pre-clear
-/// snapshot is skipped entirely, any other snapshot refreshes the status
-/// bar only, and the view catches up on the next `Apply` (resume).
-pub fn clear_gate(paused: bool, pending: bool, seen: u64, update: &StoreUpdate) -> ClearGate {
-    if pending && update.clear_count <= seen {
-        return ClearGate::Skip;
-    }
-    if paused {
-        return ClearGate::StatusOnly;
-    }
-    ClearGate::Apply
 }
 
 /// Parse thread body: consumes tail messages, updates the store, and pushes
@@ -166,7 +113,6 @@ pub fn clear_gate(paused: bool, pending: bool, seen: u64, update: &StoreUpdate) 
 fn parse_loop(
     rx: mpsc::Receiver<TailMessage>,
     tx: mpsc::Sender<StoreUpdate>,
-    cmd_rx: mpsc::Receiver<Command>,
     stop: Arc<AtomicBool>,
     max_requests: usize,
 ) {
@@ -176,12 +122,6 @@ fn parse_loop(
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
-        }
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                Command::Clear => processor.clear(),
-            }
-            pending = true;
         }
         let wait = next_push.saturating_duration_since(Instant::now());
         match rx.recv_timeout(wait) {
@@ -218,10 +158,11 @@ fn parse_loop(
 /// boundaries.
 pub struct Pipeline {
     rx: Mutex<mpsc::Receiver<StoreUpdate>>,
-    cmd_tx: mpsc::Sender<Command>,
     stop: Arc<AtomicBool>,
     tail_handle: Option<JoinHandle<()>>,
     parse_handle: Option<JoinHandle<()>>,
+    poll_interval: Duration,
+    max_requests: usize,
 }
 
 impl Pipeline {
@@ -230,36 +171,37 @@ impl Pipeline {
     pub fn start(path: impl Into<PathBuf>, poll_interval: Duration, max_requests: usize) -> Self {
         let (tail_tx, tail_rx) = mpsc::channel();
         let (update_tx, update_rx) = mpsc::channel();
-        let (cmd_tx, cmd_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let tail_handle = spawn_tail(Tail::new(path, poll_interval), tail_tx, stop.clone());
         let parse_stop = stop.clone();
         let parse_handle = thread::Builder::new()
             .name("parse".to_string())
-            .spawn(move || parse_loop(tail_rx, update_tx, cmd_rx, parse_stop, max_requests))
+            .spawn(move || parse_loop(tail_rx, update_tx, parse_stop, max_requests))
             .expect("failed to spawn parse thread");
         Self {
             rx: Mutex::new(update_rx),
-            cmd_tx,
             stop,
             tail_handle: Some(tail_handle),
             parse_handle: Some(parse_handle),
+            poll_interval,
+            max_requests,
         }
+    }
+
+    /// The poll interval the tail thread uses (FR-1.2).
+    pub fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+
+    /// The request-row cap the store keeps (FR-5.5).
+    pub fn max_requests(&self) -> usize {
+        self.max_requests
     }
 
     /// Take the newest pending snapshot without blocking, dropping older
     /// ones. The UI calls this on its ≤ 4 Hz timer.
     pub fn take_latest(&self) -> Option<StoreUpdate> {
         latest_update(&self.rx)
-    }
-
-    /// Ask the parse thread to reset the in-memory state (FR-7.1 "Clear").
-    ///
-    /// The command is processed on the parse thread within one loop
-    /// iteration (≤ `PUSH_INTERVAL`); the resulting snapshot carries a
-    /// bumped `clear_count` so the UI can recognize it.
-    pub fn clear(&self) {
-        let _ = self.cmd_tx.send(Command::Clear);
     }
 
     /// Signal the threads to stop and wait for them to exit.
@@ -373,83 +315,6 @@ mod tests {
         });
         assert_eq!(p.status(), TailStatus::Live);
         assert_eq!(p.last_event_time(), Some(t));
-    }
-
-    #[test]
-    fn processor_clear_resets_store_and_bumps_clear_count() {
-        let mut p = Processor::new();
-        p.handle(&line(&throughput_line(1000)));
-        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-        p.handle(&TailMessage::Status {
-            status: TailStatus::Live,
-            last_event_time: Some(t),
-        });
-        assert_eq!(p.clear_count(), 0);
-
-        p.clear();
-
-        assert_eq!(p.clear_count(), 1);
-        assert!(p.store().throughput().is_empty());
-        assert!(p.last_event_time().is_none());
-        assert_eq!(p.status(), TailStatus::Live, "clear keeps the tail status");
-        let snap = p.snapshot();
-        assert_eq!(snap.clear_count, 1);
-        assert!(snap.last_event_time.is_none());
-    }
-
-    #[test]
-    fn processor_clear_is_idempotent_on_empty_state() {
-        let mut p = Processor::new();
-        p.clear();
-        p.clear();
-        assert_eq!(p.clear_count(), 2);
-        assert!(p.store().throughput().is_empty());
-    }
-
-    fn update_with_clear_count(count: u64) -> StoreUpdate {
-        StoreUpdate {
-            store: Store::new(),
-            status: TailStatus::Live,
-            last_event_time: None,
-            clear_count: count,
-        }
-    }
-
-    #[test]
-    fn clear_gate_applies_when_running() {
-        let u = update_with_clear_count(0);
-        assert!(matches!(clear_gate(false, false, 0, &u), ClearGate::Apply));
-    }
-
-    #[test]
-    fn clear_gate_freezes_view_while_paused() {
-        let u = update_with_clear_count(0);
-        assert!(matches!(
-            clear_gate(true, false, 5, &u),
-            ClearGate::StatusOnly
-        ));
-    }
-
-    #[test]
-    fn clear_gate_skips_pre_clear_snapshots() {
-        let u = update_with_clear_count(1);
-        assert!(matches!(clear_gate(false, true, 1, &u), ClearGate::Skip));
-        assert!(matches!(clear_gate(true, true, 2, &u), ClearGate::Skip));
-    }
-
-    #[test]
-    fn clear_gate_post_clear_is_status_only_while_paused() {
-        let u = update_with_clear_count(1);
-        assert!(matches!(
-            clear_gate(true, true, 0, &u),
-            ClearGate::StatusOnly
-        ));
-    }
-
-    #[test]
-    fn clear_gate_post_clear_applies_when_running() {
-        let u = update_with_clear_count(1);
-        assert!(matches!(clear_gate(false, true, 0, &u), ClearGate::Apply));
     }
 
     #[test]

@@ -8,13 +8,17 @@ export component MetricWidget inherits Rectangle {
     in property <string> title: "Throughput (tok/s)";
     in property <string> left-label: "Prefill";
     in property <string> left-value: "—";
+    in property <string> left-unit: "";
     in property <int> left-trend: 0;
     in property <bool> left-up-is-good: true;
     in property <string> right-label: "Decode";
     in property <string> right-value: "—";
+    in property <string> right-unit: "";
     in property <int> right-trend: 0;
     in property <bool> right-up-is-good: true;
     in property <bool> show-flat-trend: true;
+    in property <length> left-value-font-size: 27px;
+    in property <length> right-value-font-size: 27px;
     in property <image> chart-image;
 
     out property <float> chart-width: chart-rect.width / 1px;
@@ -63,10 +67,17 @@ export component MetricWidget inherits Rectangle {
 
                     Text {
                         text: root.left-value;
-                        font-size: 27px;
+                        font-size: root.left-value-font-size;
                         font-weight: 600;
                         color: #e0e0e0;
                         overflow: TextOverflow.elide;
+                    }
+
+                    if root.left-unit != "": Text {
+                        text: root.left-unit;
+                        font-size: 12px;
+                        color: #9e9e9e;
+                        overflow: TextOverflow.clip;
                     }
 
                     if root.left-trend != 0 || root.show-flat-trend: Text {
@@ -119,10 +130,18 @@ export component MetricWidget inherits Rectangle {
 
                     Text {
                         text: root.right-value;
-                        font-size: 27px;
+                        font-size: root.right-value-font-size;
                         font-weight: 600;
                         color: #e0e0e0;
+                        horizontal-alignment: center;
                         overflow: TextOverflow.elide;
+                    }
+
+                    if root.right-unit != "": Text {
+                        text: root.right-unit;
+                        font-size: 12px;
+                        color: #9e9e9e;
+                        overflow: TextOverflow.clip;
                     }
 
                     if root.right-trend != 0 || root.show-flat-trend: Text {

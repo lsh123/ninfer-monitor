@@ -77,7 +77,7 @@ fn throughput_chart_matches_raw_json() {
         "need >=3 reference points, got {}",
         expected.len()
     );
-    let data = chart::prepare(&store, ChartKind::Throughput, 300_000);
+    let data = chart::prepare(&store, ChartKind::Throughput, 300_000, t_end);
     let got = &data.series[1].points;
     assert!(got.len() >= 3, "chart has <3 decode points");
     for i in 0..3 {
@@ -117,7 +117,7 @@ fn ttft_chart_matches_raw_json() {
         "need >=3 reference points, got {}",
         expected.len()
     );
-    let data = chart::prepare(&store, ChartKind::Latency, 300_000);
+    let data = chart::prepare(&store, ChartKind::Latency, 300_000, t_end);
     let got = &data.series[0].points;
     assert!(got.len() >= 3, "chart has <3 ttft points");
     for i in 0..3 {
@@ -161,7 +161,7 @@ fn per_token_latency_chart_matches_raw_json() {
         "need >=3 reference points, got {}",
         expected.len()
     );
-    let data = chart::prepare(&store, ChartKind::Latency, 300_000);
+    let data = chart::prepare(&store, ChartKind::Latency, 300_000, t_end);
     let got = &data.series[1].points;
     assert!(got.len() >= 3, "chart has <3 per-token points");
     for i in 0..3 {
@@ -211,7 +211,7 @@ fn cache_chart_last_point_matches_raw_json() {
         }
     }
     let expected_rate = hit as f64 / prompt as f64 * 100.0;
-    let data = chart::prepare(&store, ChartKind::Cache, 300_000);
+    let data = chart::prepare(&store, ChartKind::Cache, 300_000, t_end);
     let got = &data.series[0].points;
     let (act_ts, act_v) = got.last().expect("a cache point");
     assert!(
@@ -227,7 +227,7 @@ fn cache_chart_last_point_matches_raw_json() {
 #[test]
 fn cache_chart_has_windowed_rate_series() {
     let store = sample_store();
-    let data = chart::prepare(&store, ChartKind::Cache, 300_000);
+    let data = chart::prepare(&store, ChartKind::Cache, 300_000, 0);
     assert_eq!(data.series.len(), 2);
     assert_eq!(data.series[0].name, "cache hit");
     assert_eq!(data.series[1].name, "spec accept");
@@ -268,7 +268,7 @@ fn scheduler_chart_matches_raw_json() {
         "need >=3 reference points, got {}",
         expected.len()
     );
-    let data = chart::prepare(&store, ChartKind::Scheduler, 300_000);
+    let data = chart::prepare(&store, ChartKind::Scheduler, 300_000, t_end);
     let running = &data.series[0].points;
     let waiting = &data.series[1].points;
     assert!(
@@ -301,7 +301,7 @@ fn window_filtering_matches_raw_json() {
                         .is_some()
             })
             .count();
-        let data = chart::prepare(&store, ChartKind::Throughput, window_ms);
+        let data = chart::prepare(&store, ChartKind::Throughput, window_ms, t_end);
         assert_eq!(
             data.series[1].points.len(),
             expected_count,
@@ -333,7 +333,12 @@ fn render_each_chart_under_50ms() {
         ChartKind::Cache,
         ChartKind::Scheduler,
     ] {
-        let data = chart::prepare(&store, kind, 3_600_000);
+        let data = chart::prepare(
+            &store,
+            kind,
+            3_600_000,
+            store.max_timestamp_ms().unwrap_or(0),
+        );
         let mut durations = Vec::new();
         for _ in 0..5 {
             let start = std::time::Instant::now();
@@ -358,7 +363,7 @@ fn empty_store_has_no_points() {
         ChartKind::Cache,
         ChartKind::Scheduler,
     ] {
-        let data = chart::prepare(&store, kind, 300_000);
+        let data = chart::prepare(&store, kind, 300_000, 0);
         assert!(
             data.series.iter().all(|s| s.points.is_empty()),
             "{kind:?} should be empty"
@@ -383,7 +388,7 @@ fn restart_marker_included_for_all_charts() {
         ChartKind::Cache,
         ChartKind::Scheduler,
     ] {
-        let data = chart::prepare(&store, kind, 10_000);
+        let data = chart::prepare(&store, kind, 10_000, 6_000);
         assert_eq!(data.restarts, vec![5000.0], "{kind:?} restart marker");
     }
 }

@@ -453,12 +453,6 @@ impl Store {
         self.max_schema_version
     }
 
-    /// Reset all in-memory state (FR-7.1 "Clear"), keeping the configured
-    /// request-row cap.
-    pub fn clear(&mut self) {
-        *self = Self::with_max_requests(self.max_requests);
-    }
-
     /// The configured cap on request rows kept in memory (FR-5.5).
     pub fn max_requests(&self) -> usize {
         self.max_requests
@@ -715,19 +709,6 @@ mod tests {
     }
 
     #[test]
-    fn clear_resets_state() {
-        let mut store = Store::new();
-        store.apply(&request_done_line(1_000, 1));
-        store.apply(&throughput_line(1_000));
-        store.note_skipped_line();
-        store.clear();
-        assert_eq!(store.total_done(), 0);
-        assert!(store.latest_throughput().is_none());
-        assert_eq!(store.skipped_lines(), 0);
-        assert!(store.server().is_none());
-    }
-
-    #[test]
     fn unknown_event_is_ignored() {
         let mut store = Store::new();
         let raw = r#"{"artifact_type":"ninfer_serve_request_log","schema_version":20,"server_instance_id":"s","timestamp_unix_ms":1000,"event":"future_event"}"#;
@@ -805,15 +786,6 @@ mod tests {
         assert_eq!(store.dropped_requests(), 1);
         assert!(store.request(1).is_none());
         assert!(store.request(next_id).is_some());
-    }
-
-    #[test]
-    fn clear_keeps_the_max_requests_cap() {
-        let mut store = Store::with_max_requests(50);
-        store.apply(&request_done_line(1_000, 1));
-        store.clear();
-        assert_eq!(store.max_requests(), 50);
-        assert_eq!(store.request_count(), 0);
     }
 
     #[test]

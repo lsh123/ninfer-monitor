@@ -1,6 +1,6 @@
 [package]
 name = "ninfer-monitor"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Real-time dashboard for the NInfer server request log (server.requests.jsonl)"
 
@@ -16,6 +16,10 @@ formats = ["nsis"]
 [package.metadata.packager.nsis]
 installer-mode = "perMachine"
 installer-icon = "src/ui/icons/app_icon.ico"
+# A vendored copy of cargo-packager's default NSIS template with two hooks added:
+# the end-of-install `--add-nvidia-app-profile` and the pre-uninstall
+# `--delete-nvidia-app-profile` (M6, per-machine NVIDIA game-popup profile).
+template = "packaging/nsis/installer.nsi"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -26,9 +30,15 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 slint = "1.17.1"
 thiserror = "2.0.20"
+ureq = "2.12"
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+nvml-wrapper = "0.13"
+nvml-wrapper-sys = "0.10"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
+nvapi = "0.1.4"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Shell"] }
 
 [build-dependencies]
 slint-build = "1.17.1"

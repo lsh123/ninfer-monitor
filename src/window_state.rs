@@ -165,12 +165,12 @@ pub fn current_monitors() -> Vec<Monitor> {
     }
 }
 
-/// The crate's only `unsafe`, confined to Windows monitor enumeration
-/// (multi-monitor geometry restore). Each `unsafe` block is soundness-justified
-/// by an adjacent `// SAFETY:` comment: the `LPARAM` points at the `Vec` that
-/// owns the enumeration, OS-supplied handles are treated as valid, and the
-/// `GetDpiForMonitor` out-pointers reference writable `u32`s. On non-Windows
-/// targets this module is not compiled and the crate is `unsafe`-free.
+/// One of the crate's isolated `unsafe` areas, confined to Windows monitor
+/// enumeration (multi-monitor geometry restore). Each `unsafe` block is
+/// soundness-justified by an adjacent `// SAFETY:` comment: the `LPARAM`
+/// points at the `Vec` that owns the enumeration, OS-supplied handles are
+/// treated as valid, and the `GetDpiForMonitor` out-pointers reference
+/// writable `u32`s. On non-Windows targets this module is not compiled.
 #[cfg(windows)]
 mod win {
     use windows::Win32::Foundation::{LPARAM, RECT};

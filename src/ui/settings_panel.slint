@@ -5,21 +5,36 @@
 // Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
 
 import { DarkButton } from "dark_button.slint";
-import { Slider } from "std-widgets.slint";
+import { LineEdit, Slider } from "std-widgets.slint";
 
 export component SettingsPanel inherits Rectangle {
-    in-out property <int> poll-ms: 500;
+    in-out property <int> log-poll-ms: 500;
+    in-out property <int> gpu-poll-ms: 5000;
     in-out property <int> max-requests: 1000;
+    in-out property <string> file: "";
+    in-out property <string> temp-unit: "F";
+    in-out property <bool> update-check-enabled: true;
+    in-out property <int> update-check-days: 3;
+    in property <bool> nvidia-popup-visible: false;
+    in property <string> nvidia-popup-status: "";
 
     callback save();
     callback close();
     callback about();
     callback escape();
+    callback open-file();
+    callback nvidia-popup();
 
     background: #252526;
     border-radius: 6px;
     border-width: 1px;
     border-color: #3c3c3c;
+    height: content-layout.preferred-height;
+
+    click-blocker := TouchArea {
+        width: parent.width;
+        height: parent.height;
+    }
 
     about-measure := Text {
         text: "About";
@@ -27,9 +42,10 @@ export component SettingsPanel inherits Rectangle {
         visible: false;
     }
 
-    click-blocker := TouchArea {
-        width: parent.width;
-        height: parent.height;
+    nvidia-measure := Text {
+        text: "Disable NVIDIA popup";
+        font-size: 12px;
+        visible: false;
     }
 
     scope := FocusScope {
@@ -40,31 +56,39 @@ export component SettingsPanel inherits Rectangle {
             }
         }
 
-        VerticalLayout {
-            padding: 12px;
-            spacing: 10px;
+        content-layout := VerticalLayout {
+            padding: 48px;
+            spacing: 12px;
+
+            Text {
+                text: "Settings";
+                font-size: 18px;
+                font-weight: 700;
+                color: #e0e0e0;
+            }
+
+            Rectangle {
+                height: 16px;
+            }
 
             HorizontalLayout {
                 spacing: 8px;
+                cross-axis-alignment: center;
 
-                Text {
-                    text: "Settings";
-                    font-size: 14px;
-                    font-weight: 700;
-                    color: #e0e0e0;
-                }
-
-                Rectangle {
+                file-input := LineEdit {
                     horizontal-stretch: 1;
+                    text <=> root.file;
+                    placeholder-text: "Path to server.requests.jsonl";
                 }
 
-                btn-close-x := DarkButton {
-                    text: "×";
-                    width: 24px;
+                btn-open-file := DarkButton {
+                    text: "Open File...";
+                    icon: @image-url("icons/open_folder.svg");
+                    has-icon: true;
+                    width: 110px;
                     height: 24px;
-                    accessible-text: "Close settings";
                     clicked => {
-                        root.close();
+                        root.open-file();
                     }
                 }
             }
@@ -72,12 +96,12 @@ export component SettingsPanel inherits Rectangle {
             VerticalLayout {
                 spacing: 6px;
 
-                poll-label := Text {
-                    text: root.poll-ms >= 1000
-                        ? ((root.poll-ms / 1000).round() == root.poll-ms / 1000
-                            ? "Poll interval: " + (root.poll-ms / 1000).to-string-unlocalized() + " s"
-                            : "Poll interval: " + (root.poll-ms / 1000).to-fixed(1) + " s")
-                        : "Poll interval: " + root.poll-ms.to-string-unlocalized() + " ms";
+                log-poll-label := Text {
+                    text: root.log-poll-ms >= 1000
+                        ? ((root.log-poll-ms / 1000).round() == root.log-poll-ms / 1000
+                            ? "Log file poll interval: " + (root.log-poll-ms / 1000).to-string-unlocalized() + " s"
+                            : "Log file poll interval: " + (root.log-poll-ms / 1000).to-fixed(1) + " s")
+                        : "Log file poll interval: " + root.log-poll-ms.to-string-unlocalized() + " ms";
                     font-size: 12px;
                     color: #9e9e9e;
                 }
@@ -91,21 +115,62 @@ export component SettingsPanel inherits Rectangle {
                         color: #616161;
                     }
 
-                    poll-slider := Slider {
+                    log-poll-slider := Slider {
                         horizontal-stretch: 1;
                         minimum: 100;
                         maximum: 5000;
-                        value: root.poll-ms;
+                        value: root.log-poll-ms;
                         changed(value) => {
                             let step = 100;
                             let rounded = Math.round(value / step) * step;
-                            root.poll-ms = rounded;
+                            root.log-poll-ms = rounded;
                             self.value = rounded;
                         }
                     }
 
                     Text {
                         text: "5 s";
+                        font-size: 11px;
+                        color: #616161;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+
+                gpu-poll-label := Text {
+                    text: ((root.gpu-poll-ms / 1000).round() == root.gpu-poll-ms / 1000
+                        ? "GPU poll interval: " + (root.gpu-poll-ms / 1000).to-string-unlocalized() + " s"
+                        : "GPU poll interval: " + (root.gpu-poll-ms / 1000).to-fixed(1) + " s");
+                    font-size: 12px;
+                    color: #9e9e9e;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: "1 s";
+                        font-size: 11px;
+                        color: #616161;
+                    }
+
+                    gpu-poll-slider := Slider {
+                        horizontal-stretch: 1;
+                        minimum: 1000;
+                        maximum: 10000;
+                        value: root.gpu-poll-ms;
+                        changed(value) => {
+                            let step = 1000;
+                            let rounded = Math.round(value / step) * step;
+                            root.gpu-poll-ms = rounded;
+                            self.value = rounded;
+                        }
+                    }
+
+                    Text {
+                        text: "10 s";
                         font-size: 11px;
                         color: #616161;
                     }
@@ -151,8 +216,173 @@ export component SettingsPanel inherits Rectangle {
                 }
             }
 
-            spacer := Rectangle {
-                vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 6px;
+
+                temp-label := Text {
+                    text: "Temperature unit";
+                    font-size: 12px;
+                    color: #9e9e9e;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    temp-f := DarkButton {
+                        text: "°F";
+                        width: 60px;
+                        height: 24px;
+                        selected: root.temp-unit == "F";
+                        clicked => {
+                            root.temp-unit = "F";
+                        }
+                    }
+
+                    temp-c := DarkButton {
+                        text: "°C";
+                        width: 60px;
+                        height: 24px;
+                        selected: root.temp-unit == "C";
+                        clicked => {
+                            root.temp-unit = "C";
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 16px;
+            }
+
+            update-check-group := VerticalLayout {
+                spacing: 6px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    cross-axis-alignment: center;
+
+                    update-check-box := Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        background: #1e1e1e;
+                        border-width: 1px;
+                        border-radius: 3px;
+                        border-color: root.update-check-enabled ? #4fc3f7 : #616161;
+
+                        check-mark := Image {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 10px;
+                            height: 10px;
+                            source: @image-url("icons/check.svg");
+                            visible: root.update-check-enabled;
+                        }
+
+                        update-check-ta := TouchArea {
+                            width: parent.width;
+                            height: parent.height;
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.update-check-enabled = !root.update-check-enabled;
+                            }
+                        }
+                    }
+
+                    update-check-label := Text {
+                        text: "Check for updates";
+                        font-size: 12px;
+                        color: #9e9e9e;
+                    }
+                }
+
+                update-interval-label := Text {
+                    text: "Check interval: " + root.update-check-days.to-string-unlocalized() + (root.update-check-days == 1 ? " day" : " days");
+                    font-size: 12px;
+                    color: #9e9e9e;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: "1 day";
+                        font-size: 11px;
+                        color: #616161;
+                    }
+
+                    update-days-slider := Slider {
+                        horizontal-stretch: 1;
+                        minimum: 1;
+                        maximum: 14;
+                        value: root.update-check-days;
+                        enabled: root.update-check-enabled;
+                        changed(value) => {
+                            let rounded = Math.round(value);
+                            root.update-check-days = rounded;
+                            self.value = rounded;
+                        }
+                    }
+
+                    Text {
+                        text: "14 days";
+                        font-size: 11px;
+                        color: #616161;
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 16px;
+            }
+
+            if root.nvidia-popup-visible: nvidia-group := VerticalLayout {
+                spacing: 4px;
+
+                nvidia-row := HorizontalLayout {
+                    spacing: 0px;
+
+                    nvidia-link := Rectangle {
+                        width: nvidia-measure.width;
+                        height: nvidia-measure.height + 2px;
+
+                        nvidia-text := Text {
+                            x: 0;
+                            y: 0;
+                            text: "Disable NVIDIA popup";
+                            font-size: 12px;
+                            color: #4fc3f7;
+                        }
+
+                        nvidia-underline := Rectangle {
+                            x: 0;
+                            y: nvidia-measure.height;
+                            width: nvidia-measure.width;
+                            height: 1px;
+                            background: #4fc3f7;
+                        }
+
+                        nvidia-ta := TouchArea {
+                            width: parent.width;
+                            height: parent.height;
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => {
+                                root.nvidia-popup();
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                nvidia-status-text := Text {
+                    text: root.nvidia-popup-status;
+                    font-size: 12px;
+                    color: #9e9e9e;
+                    visible: root.nvidia-popup-status != "";
+                    overflow: elide;
+                }
             }
 
             about-row := HorizontalLayout {
@@ -193,13 +423,17 @@ export component SettingsPanel inherits Rectangle {
                 }
             }
 
+            Rectangle {
+                height: 16px;
+            }
+
             HorizontalLayout {
                 alignment: center;
                 spacing: 8px;
 
                 btn-ok := DarkButton {
                     text: "OK";
-                    min-width: 60px;
+                    width: 90px;
                     height: 24px;
                     clicked => {
                         root.save();
@@ -208,7 +442,7 @@ export component SettingsPanel inherits Rectangle {
 
                 btn-cancel := DarkButton {
                     text: "Cancel";
-                    min-width: 60px;
+                    width: 90px;
                     height: 24px;
                     clicked => {
                         root.close();
