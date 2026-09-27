@@ -18,7 +18,7 @@ NInferMonitor tails the request log produced by the NInfer server:
 
 ## Screenshot
 
-![NInferMonitor dashboard](tests/snapshots/request-detail.png)
+![NInferMonitor dashboard](docs/screenshot.png)
 
 Live dashboard: KPI widgets with dual-axis charts (throughput, latency, cache,
 scheduler), the request table with an expanded request detail row, the
