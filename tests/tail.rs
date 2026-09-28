@@ -298,6 +298,26 @@ fn backfill_large_file_is_fast() {
 }
 
 #[test]
+fn a_single_ten_megabyte_line_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log.jsonl");
+    let line = format!(
+        "{{\"event\":\"throughput\",\"pad\":\"{}\"}}",
+        "x".repeat(10_000_000)
+    );
+    let mut file = File::create(&path).unwrap();
+    file.write_all(line.as_bytes()).unwrap();
+    file.write_all(b"\n").unwrap();
+    drop(file);
+
+    let mut tail = Tail::new(&path, FAST);
+    let result = tail.poll();
+    assert_eq!(result.status, TailStatus::Live);
+    assert_eq!(result.lines.len(), 1);
+    assert_eq!(result.lines[0], line.as_bytes());
+}
+
+#[test]
 fn spawn_delivers_lines_in_order() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("log.jsonl");

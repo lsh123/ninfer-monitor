@@ -4,55 +4,78 @@
 //
 // Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// The startup-screen message shown when no log file is configured (PRD §3.1).
-pub const MSG_NO_FILE: &str =
-    "Please select NInfer log file (e.g. 'server.requests.jsonl') to start monitoring.";
+/// The startup-screen message shown when no NInfer installation folder is
+/// configured (v0.3 M2).
+pub const MSG_NO_FOLDER: &str = "Please select the NInfer installation folder to start.";
 
-/// The startup-screen message shown when a configured log file does not exist
-/// or cannot be read (PRD §3.1).
-pub const MSG_UNREADABLE: &str = "The currently selected file cannot be read, please ensure NInfer is configured correctly and is running; or select another file to start monitoring.";
+/// The startup-screen message shown when a configured folder is not a valid
+/// NInfer installation folder (v0.3 M2).
+pub const MSG_INVALID_FOLDER: &str = "The currently selected folder is not a valid NInfer installation folder (it must contain the ninfer-serve executable), please select the NInfer installation folder to start monitoring.";
 
-/// Whether `path` points to an existing, readable file — the validity
-/// criterion for the startup screen's Start button (PRD §3.1).
-pub fn file_is_readable(path: &Path) -> bool {
-    path.is_file() && std::fs::File::open(path).is_ok()
+/// The file name of the NInfer server executable, with the OS-specific
+/// extension (v0.3 M2).
+pub fn ninfer_serve_exe_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "ninfer-serve.exe"
+    }
+    #[cfg(not(windows))]
+    {
+        "ninfer-serve"
+    }
 }
 
-/// The startup screen's state (PRD §3.1/M1), derived from the resolved log
-/// path (CLI path or the configured `last_path`).
+/// Whether `path` is a valid NInfer installation folder: an existing
+/// directory that contains the `ninfer-serve` executable (v0.3 M2).
+pub fn is_valid_install_folder(path: &Path) -> bool {
+    path.join(ninfer_serve_exe_name()).is_file()
+}
+
+/// The app-managed log file monitored by default:
+/// `<log_file_folder>/ninfer-monitor/server.requests.jsonl` (v0.3 M2).
+pub fn monitored_log_path(log_file_folder: &str) -> PathBuf {
+    Path::new(log_file_folder)
+        .join("ninfer-monitor")
+        .join("server.requests.jsonl")
+}
+
+/// The startup screen's state (v0.3 M2), derived from the resolved install
+/// folder (CLI folder or the configured `install_folder`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupState {
-    /// Whether the startup screen is shown. `false` when a valid (existing,
-    /// readable) file is given, in which case the dashboard opens directly.
+    /// Whether the startup screen is shown. `false` when a valid install
+    /// folder is given, in which case the dashboard opens directly.
     pub visible: bool,
     /// The message to show (empty when the screen is not shown).
     pub message: &'static str,
-    /// The file to pre-fill the text box with (empty when none is configured).
-    pub file: String,
+    /// The folder to pre-fill the text box with (empty when none is
+    /// configured).
+    pub folder: String,
 }
 
-/// Decide the startup screen's state from the resolved log path (PRD §3.1/M1):
-/// a valid (existing, readable) file skips the screen; a configured file that
-/// is missing or unreadable shows the "cannot be read" message with the file
-/// pre-filled; no configured file shows the "no file configured" message.
-pub fn startup_state(resolved_path: Option<&Path>) -> StartupState {
-    match resolved_path {
-        Some(path) if file_is_readable(path) => StartupState {
+/// Decide the startup screen's state from the resolved install folder
+/// (v0.3 M2): a valid folder skips the screen; a configured folder that is
+/// not a valid install folder shows the "invalid folder" message with the
+/// folder pre-filled; no configured folder shows the "no folder configured"
+/// message.
+pub fn startup_state(resolved_folder: Option<&Path>) -> StartupState {
+    match resolved_folder {
+        Some(folder) if is_valid_install_folder(folder) => StartupState {
             visible: false,
             message: "",
-            file: String::new(),
+            folder: String::new(),
         },
-        Some(path) => StartupState {
+        Some(folder) => StartupState {
             visible: true,
-            message: MSG_UNREADABLE,
-            file: path.display().to_string(),
+            message: MSG_INVALID_FOLDER,
+            folder: folder.display().to_string(),
         },
         None => StartupState {
             visible: true,
-            message: MSG_NO_FILE,
-            file: String::new(),
+            message: MSG_NO_FOLDER,
+            folder: String::new(),
         },
     }
 }
@@ -62,66 +85,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_path_shows_no_file_message() {
+    fn no_folder_shows_no_folder_message() {
         let s = startup_state(None);
         assert!(s.visible);
-        assert_eq!(s.message, MSG_NO_FILE);
-        assert_eq!(s.file, "");
+        assert_eq!(s.message, MSG_NO_FOLDER);
+        assert_eq!(s.folder, "");
     }
 
     #[test]
-    fn valid_path_skips_startup_screen() {
+    fn valid_folder_skips_startup_screen() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("log.jsonl");
-        std::fs::File::create(&path).unwrap();
-        let s = startup_state(Some(&path));
+        std::fs::File::create(dir.path().join(ninfer_serve_exe_name())).unwrap();
+        let s = startup_state(Some(dir.path()));
         assert!(!s.visible);
         assert_eq!(s.message, "");
-        assert_eq!(s.file, "");
+        assert_eq!(s.folder, "");
     }
 
     #[test]
-    fn missing_path_shows_unreadable_message() {
+    fn missing_folder_shows_invalid_message() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("missing.jsonl");
+        let path = dir.path().join("missing");
         let s = startup_state(Some(&path));
         assert!(s.visible);
-        assert_eq!(s.message, MSG_UNREADABLE);
-        assert_eq!(s.file, path.display().to_string());
+        assert_eq!(s.message, MSG_INVALID_FOLDER);
+        assert_eq!(s.folder, path.display().to_string());
     }
 
     #[test]
-    fn directory_path_shows_unreadable_message() {
+    fn folder_without_the_executable_shows_invalid_message() {
         let dir = tempfile::tempdir().unwrap();
         let s = startup_state(Some(dir.path()));
         assert!(s.visible);
-        assert_eq!(s.message, MSG_UNREADABLE);
-        assert_eq!(s.file, dir.path().display().to_string());
+        assert_eq!(s.message, MSG_INVALID_FOLDER);
+        assert_eq!(s.folder, dir.path().display().to_string());
     }
 
     #[test]
-    fn file_is_readable_true_for_existing_file() {
+    fn is_valid_install_folder_true_when_the_executable_is_present() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("log.jsonl");
-        std::fs::File::create(&path).unwrap();
-        assert!(file_is_readable(&path));
+        std::fs::File::create(dir.path().join(ninfer_serve_exe_name())).unwrap();
+        assert!(is_valid_install_folder(dir.path()));
     }
 
     #[test]
-    fn file_is_readable_false_for_missing_file() {
+    fn is_valid_install_folder_false_for_missing_folder() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("missing.jsonl");
-        assert!(!file_is_readable(&path));
+        assert!(!is_valid_install_folder(&dir.path().join("missing")));
     }
 
     #[test]
-    fn file_is_readable_false_for_directory() {
+    fn is_valid_install_folder_false_when_the_executable_is_missing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!file_is_readable(dir.path()));
+        assert!(!is_valid_install_folder(dir.path()));
     }
 
     #[test]
-    fn file_is_readable_false_for_empty_path() {
-        assert!(!file_is_readable(Path::new("")));
+    fn is_valid_install_folder_false_when_the_executable_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(ninfer_serve_exe_name())).unwrap();
+        assert!(!is_valid_install_folder(dir.path()));
+    }
+
+    #[test]
+    fn is_valid_install_folder_false_for_empty_path() {
+        assert!(!is_valid_install_folder(Path::new("")));
+    }
+
+    #[test]
+    fn monitored_log_path_joins_the_app_log_file() {
+        assert_eq!(
+            monitored_log_path("C:/logs"),
+            Path::new("C:/logs")
+                .join("ninfer-monitor")
+                .join("server.requests.jsonl")
+        );
+        assert_eq!(
+            monitored_log_path("/tmp"),
+            Path::new("/tmp")
+                .join("ninfer-monitor")
+                .join("server.requests.jsonl")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exe_name_has_the_windows_extension() {
+        assert_eq!(ninfer_serve_exe_name(), "ninfer-serve.exe");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn exe_name_has_no_extension_off_windows() {
+        assert_eq!(ninfer_serve_exe_name(), "ninfer-serve");
     }
 }

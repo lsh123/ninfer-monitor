@@ -71,7 +71,9 @@ pub struct ReleaseAsset {
 pub struct LatestRelease {
     /// The release tag, as published (e.g. `v0.3.0`).
     pub tag: String,
-    /// The normalized version (the tag with a leading `v`/`V` stripped).
+    /// The full semantic version: the tag with a leading `v`/`V` stripped and
+    /// a 1- or 2-component tag padded with zeros (`0.2` -> `0.2.0`); the
+    /// stripped tag as-is when it is not a parseable version.
     pub version: String,
     /// The release page URL (the release notes link).
     pub url: String,
@@ -88,6 +90,20 @@ pub fn normalize_version(tag: &str) -> String {
         .to_owned()
 }
 
+/// Normalize a release tag to a full `major.minor.patch` semantic version,
+/// padding a 1- or 2-component tag with zeros (`0.2` -> `0.2.0`) and keeping
+/// any pre-release part (`0.3.0-beta` -> `0.3.0-beta`). Returns `None` when
+/// the tag is not a parseable version.
+pub fn full_semver(tag: &str) -> Option<String> {
+    let ((major, minor, patch), pre) = parse_semver(tag)?;
+    let mut version = format!("{major}.{minor}.{patch}");
+    if let Some(pre) = pre {
+        version.push('-');
+        version.push_str(pre);
+    }
+    Some(version)
+}
+
 /// Whether `candidate` is a strictly newer semantic version than `current`;
 /// unparseable versions yield `false` (no false-positive update prompt).
 pub fn is_newer(candidate: &str, current: &str) -> bool {
@@ -102,8 +118,9 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 /// Versions with a pre-release part are earlier than the release without one
 /// (`0.3.0-beta < 0.3.0`); pre-release identifiers compare dot-by-dot with
 /// numeric identifiers ordered before alphanumeric ones (semver §11). Build
-/// metadata (after `+`) is ignored. Returns `None` when either side is not a
-/// parseable `major.minor.patch` version.
+/// metadata (after `+`) is ignored. A 1- or 2-component version is padded
+/// with zeros (`0.2` == `0.2.0`). Returns `None` when either side is not a
+/// parseable version.
 pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
     let a = parse_semver(a)?;
     let b = parse_semver(b)?;
@@ -117,8 +134,10 @@ pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
 /// The `(major, minor, patch)` core and the pre-release part (if any).
 type SemVer<'a> = ((u64, u64, u64), Option<&'a str>);
 
-/// The parsed form of a version string; `None` when the core is not three
-/// numeric dot-separated components.
+/// The parsed form of a version string; `None` when the core is not one to
+/// three numeric dot-separated components. A missing minor or patch is
+/// treated as `0` (so `0.2` parses as `0.2.0`), matching the shortened
+/// release tags GitHub allows.
 fn parse_semver(s: &str) -> Option<SemVer<'_>> {
     let s = s.trim();
     let s = s
@@ -137,8 +156,14 @@ fn parse_semver(s: &str) -> Option<SemVer<'_>> {
     };
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
+    let minor = match parts.next() {
+        Some(p) => p.parse().ok()?,
+        None => 0,
+    };
+    let patch = match parts.next() {
+        Some(p) => p.parse().ok()?,
+        None => 0,
+    };
     if parts.next().is_some() {
         return None;
     }
@@ -252,7 +277,7 @@ pub fn parse_latest_release(body: &str) -> Result<LatestRelease, CheckError> {
         .unwrap_or_default();
     Ok(LatestRelease {
         tag: tag.to_owned(),
-        version: normalize_version(tag),
+        version: full_semver(tag).unwrap_or_else(|| normalize_version(tag)),
         url,
         assets,
     })
@@ -396,6 +421,17 @@ mod tests {
     }
 
     #[test]
+    fn full_semver_pads_short_tags() {
+        assert_eq!(full_semver("0.2"), Some("0.2.0".to_owned()));
+        assert_eq!(full_semver("v0.2"), Some("0.2.0".to_owned()));
+        assert_eq!(full_semver("1"), Some("1.0.0".to_owned()));
+        assert_eq!(full_semver("0.3.0"), Some("0.3.0".to_owned()));
+        assert_eq!(full_semver("0.3.0-beta"), Some("0.3.0-beta".to_owned()));
+        assert_eq!(full_semver("abc"), None);
+        assert_eq!(full_semver("0.3.0.1"), None);
+    }
+
+    #[test]
     fn compare_semantic_ordering() {
         assert_eq!(compare_versions("0.3.0", "0.3.0"), Some(Ordering::Equal));
         assert_eq!(compare_versions("0.3.0", "0.2.9"), Some(Ordering::Greater));
@@ -462,11 +498,20 @@ mod tests {
     #[test]
     fn compare_rejects_non_semver() {
         assert_eq!(compare_versions("abc", "0.3.0"), None);
-        assert_eq!(compare_versions("0.3", "0.3.0"), None);
         assert_eq!(compare_versions("", "0.3.0"), None);
         assert_eq!(compare_versions("0.3.0.1", "0.3.0"), None);
         assert_eq!(compare_versions("0.3.-1", "0.3.0"), None);
         assert_eq!(compare_versions("0.3.0", "latest"), None);
+    }
+
+    #[test]
+    fn compare_pads_missing_components() {
+        // A 1- or 2-component version is padded with zeros, so `0.3` ==
+        // `0.3.0` and the shortened tag `0.2` is newer than `0.1.5`.
+        assert_eq!(compare_versions("0.3", "0.3.0"), Some(Ordering::Equal));
+        assert_eq!(compare_versions("0.2", "0.1.5"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("1", "0.9.9"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("0.2", "0.2.1"), Some(Ordering::Less));
     }
 
     #[test]
@@ -601,12 +646,12 @@ mod tests {
             parse_latest_release(r#"{"tag_name":"   "}"#),
             Err(CheckError::Parse(_))
         ));
-        // The tag is trimmed and normalized into the version.
+        // The tag is trimmed and normalized to a full semantic version.
         assert_eq!(
             parse_latest_release(r#"{"tag_name":"v1"}"#)
                 .unwrap()
                 .version,
-            "1"
+            "1.0.0"
         );
     }
 
@@ -652,6 +697,27 @@ mod tests {
                         .to_owned(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn short_tag_release_is_newer_and_has_installer() {
+        // The real 0.2.0 release is tagged `0.2` (a shortened tag) while its
+        // installer asset is named with the full version.
+        let body = r#"{
+            "tag_name": "0.2",
+            "assets": [
+                {"name": "ninfer-monitor_0.2.0_x64-setup.exe",
+                 "browser_download_url": "https://github.com/lsh123/ninfer-monitor/releases/download/0.2/ninfer-monitor_0.2.0_x64-setup.exe"}
+            ]
+        }"#;
+        let release = parse_latest_release(body).unwrap();
+        assert_eq!(release.version, "0.2.0");
+        assert!(is_newer(&release.version, "0.1.5"));
+        #[cfg(windows)]
+        assert_eq!(
+            installer_asset(&release).map(|a| a.name.as_str()),
+            Some("ninfer-monitor_0.2.0_x64-setup.exe")
         );
     }
 

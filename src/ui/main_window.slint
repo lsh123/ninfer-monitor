@@ -5,15 +5,20 @@
 // Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
 
 import { AboutPanel } from "about_panel.slint";
+import { ConfirmDeletePanel } from "confirm_delete_panel.slint";
+import { ControlPanel, ConfigRow } from "control_panel.slint";
 import { DarkButton } from "dark_button.slint";
 import { GpuRow, GpuDevice } from "gpu_row.slint";
+import { LatestVersionPanel } from "latest_version_panel.slint";
 import { LineEdit } from "std-widgets.slint";
+export { Palette } from "std-widgets.slint";
 import { MetricWidget } from "metric_widget.slint";
 import { RequestTable, RequestRow } from "request_table.slint";
 import { ServerInfoPanel } from "server_info_panel.slint";
 import { SettingsPanel } from "settings_panel.slint";
 import { Splitter } from "splitter.slint";
 import { StatusBar } from "status_bar.slint";
+import { TabButton } from "tab_button.slint";
 import { UpdatePanel } from "update_panel.slint";
 
 export component MainWindow inherits Window {
@@ -25,8 +30,8 @@ export component MainWindow inherits Window {
     min-height: 600px;
     background: #1e1e1e;
 
-    in property <string> file-name: "";
-    in property <string> file-name-full: "";
+    in property <string> install-folder: "";
+    in property <string> install-folder-full: "";
     in property <string> connection-status: "—";
     in property <color> status-color: #9e9e9e;
     in property <string> last-event: "—";
@@ -62,22 +67,53 @@ export component MainWindow inherits Window {
     in property <string> kpi-spec-unit: "";
     in property <int> kpi-spec-trend: 0;
 
-    in property <bool> settings-visible: false;
+    // The active left-bar tab (M1): 0 = Control (the default), 1 = Monitor,
+    // 2 = Settings. Not persisted (the app always opens on the Control tab).
+    in-out property <int> active-tab: 0;
     in-out property <int> settings-log-poll-ms: 500;
     in-out property <int> settings-gpu-poll-ms: 5000;
     in-out property <int> settings-max-requests: 1000;
-    in-out property <string> settings-file: "";
+    in-out property <string> settings-install-folder: "";
+    in-out property <string> settings-log-file-folder: "";
+    in property <bool> settings-save-enabled: true;
+    in property <bool> settings-import-enabled: false;
+    in property <string> settings-import-status: "";
     in-out property <string> settings-temp-unit: "F";
     in-out property <bool> settings-update-check-enabled: true;
     in-out property <int> settings-update-check-days: 3;
     in property <bool> nvidia-popup-visible: false;
     in property <string> nvidia-popup-status: "";
 
+    // The Control-tab state (v0.3 M3), owned by main.rs: `control-rows` is
+    // the configurations list, `control-selected` the selected index (-1 for
+    // none), the `*-enabled` flags gate the action buttons, `control-status`
+    // is the last operation's result, and `control-name` /
+    // `control-command-line` are the in-out edit fields.
+    in property <[ConfigRow]> control-rows;
+    in property <int> control-selected: -1;
+    in property <bool> control-start-enabled: false;
+    in property <bool> control-restart-enabled: false;
+    in property <bool> control-stop-enabled: false;
+    in property <bool> control-delete-enabled: false;
+    in property <string> control-status: "";
+    in property <bool> control-status-error: false;
+    in-out property <string> control-name: "";
+    in-out property <string> control-command-line: "";
+    // Incremented by main.rs after Add to focus the name field (v0.3 M3).
+    in-out property <int> control-focus-name: 0;
+    in-out property <bool> control-name-has-focus: false;
+    // The Control-tab split: the share of the middle area given to the
+    // configurations list; the edit panel takes the rest (persisted in the
+    // config, v0.3).
+    in property <float> control-split-frac: 0.5;
+    in-out property <bool> control-delete-confirm-visible: false;
+    in-out property <string> control-delete-confirm-name: "";
+
     in property <bool> about-visible: false;
     in property <string> about-version: "";
 
     // Update-check state (M8), owned by main.rs: `update-available` shows the
-    // toolbar button, `update-visible` shows the "New version available"
+    // tab-bar button, `update-visible` shows the "New version available"
     // dialog with `update-version`, the release notes URL, and the download
     // state (`update-downloading`, `update-download-error`);
     // `update-ok-visible` hides the OK button where no installer exists
@@ -90,8 +126,13 @@ export component MainWindow inherits Window {
     in property <string> update-download-error: "";
     in property <bool> update-ok-visible: true;
 
+    // Latest-version dialog (M8): shown after a manual update check that
+    // finds no newer release; `latest-version` carries the current version.
+    in property <bool> latest-version-visible: false;
+    in property <string> latest-version: "";
+
     in property <bool> startup-visible: false;
-    in-out property <string> startup-file: "";
+    in-out property <string> startup-folder: "";
     in property <bool> startup-start-enabled: false;
     in property <string> startup-version: "";
     in property <string> startup-message: "";
@@ -113,7 +154,7 @@ export component MainWindow inherits Window {
     // the table.
     in property <length> col-id: 40px;
     in property <length> col-time: 105px;
-    in property <length> col-model: 456px;
+    in property <length> col-model: 352px;
     in property <length> col-prompt: 60px;
     in property <length> col-compl: 60px;
     in property <length> col-think: 65px;
@@ -123,6 +164,9 @@ export component MainWindow inherits Window {
     in property <length> col-status: 75px;
 
     property <image> icon-settings: @image-url("icons/gear.svg");
+    property <image> icon-control: @image-url("icons/power.svg");
+    property <image> icon-monitor: @image-url("icons/pulse.svg");
+    property <image> icon-about: @image-url("icons/info.svg");
     property <image> icon-open: @image-url("icons/open_folder.svg");
     property <image> icon-play: @image-url("icons/play.svg");
     property <image> icon-update: @image-url("icons/update.svg");
@@ -141,8 +185,8 @@ export component MainWindow inherits Window {
     out property <float> widget-scheduler-w: widget-scheduler.chart-width;
     out property <float> widget-scheduler-h: widget-scheduler.chart-height;
 
-    out property <length> file-full-width: status-bar.file-full-width;
-    out property <length> file-available: status-bar.file-available;
+    out property <length> install-folder-full-width: status-bar.install-folder-full-width;
+    out property <length> install-folder-available: status-bar.install-folder-available;
 
     in property <[GpuDevice]> gpu-devices;
     in property <[RequestRow]> request-rows;
@@ -157,10 +201,24 @@ export component MainWindow inherits Window {
 
     callback tick();
     callback row-clicked(id: string);
-    callback settings();
-    callback settings-save(log-poll-ms: int, gpu-poll-ms: int, max-requests: int, file: string, temp-unit: string, update-check-enabled: bool, update-check-days: int);
-    callback settings-close();
-    callback settings-open-file();
+    callback tab-changed(which: int);
+    callback control-config-selected(index: int);
+    callback control-add();
+    callback control-delete();
+    callback control-start();
+    callback control-restart();
+    callback control-stop();
+    callback control-edit-paused(name: string, command-line: string);
+    callback control-split-changed(frac: float);
+    callback control-split-released(frac: float);
+    callback settings-save(log-poll-ms: int, gpu-poll-ms: int, max-requests: int, install-folder: string, log-file-folder: string, temp-unit: string, update-check-enabled: bool, update-check-days: int);
+    callback settings-discard();
+    callback settings-open-folder();
+    callback settings-open-log-folder();
+    callback settings-install-folder-edited(text: string);
+    callback settings-log-file-folder-edited(text: string);
+    callback settings-check-updates();
+    callback settings-import-configs();
     callback nvidia-popup();
     callback about();
     callback about-close();
@@ -168,6 +226,7 @@ export component MainWindow inherits Window {
     callback update-close();
     callback update-install();
     callback release-notes();
+    callback latest-version-close();
     callback window-changed(ms: int);
     callback split-changed(which: int, frac: float);
     callback split-released(which: int, frac: float);
@@ -175,8 +234,8 @@ export component MainWindow inherits Window {
     callback column-released(slider: int);
     callback startup-start();
     callback startup-close();
-    callback startup-open-file();
-    callback startup-file-edited(text: string);
+    callback startup-open-folder();
+    callback startup-folder-edited(text: string);
 
     Timer {
         interval: 250ms;
@@ -186,313 +245,492 @@ export component MainWindow inherits Window {
         }
     }
 
-    VerticalLayout {
+    // The main window layout (M1): a fixed-width (96px) vertical tab bar on
+    // the left and the tab content area on the right. The tab bar spans the
+    // full window height; the status bar sits at the bottom of the right
+    // column and is visible on all tabs.
+    HorizontalLayout {
         padding: 8px;
         spacing: 8px;
 
-        header-bar := Rectangle {
-            height: 40px;
+        tab-bar := Rectangle {
+            width: 96px;
             background: #252526;
             border-radius: 6px;
 
-            HorizontalLayout {
+            VerticalLayout {
                 padding: 8px;
-                spacing: 12px;
+                spacing: 8px;
 
-                win-1m := DarkButton {
-                    text: "1m";
-                    width: 36px;
-                    selected: root.chart-window-ms == 60000;
+                tab-control := TabButton {
+                    label: "Control";
+                    icon: root.icon-control;
+                    selected: root.active-tab == 0;
                     clicked => {
-                        root.window-changed(60000);
+                        root.tab-changed(0);
                     }
                 }
 
-                win-5m := DarkButton {
-                    text: "5m";
-                    width: 36px;
-                    selected: root.chart-window-ms == 300000;
+                tab-monitor := TabButton {
+                    label: "Monitor";
+                    icon: root.icon-monitor;
+                    selected: root.active-tab == 1;
                     clicked => {
-                        root.window-changed(300000);
+                        root.tab-changed(1);
                     }
                 }
 
-                win-15m := DarkButton {
-                    text: "15m";
-                    width: 36px;
-                    selected: root.chart-window-ms == 900000;
+                tab-settings := TabButton {
+                    label: "Settings";
+                    icon: root.icon-settings;
+                    selected: root.active-tab == 2;
                     clicked => {
-                        root.window-changed(900000);
-                    }
-                }
-
-                win-30m := DarkButton {
-                    text: "30m";
-                    width: 36px;
-                    selected: root.chart-window-ms == 1800000;
-                    clicked => {
-                        root.window-changed(1800000);
-                    }
-                }
-
-                win-1h := DarkButton {
-                    text: "1h";
-                    width: 36px;
-                    selected: root.chart-window-ms == 3600000;
-                    clicked => {
-                        root.window-changed(3600000);
+                        root.tab-changed(2);
                     }
                 }
 
                 Rectangle {
-                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
                 }
 
-                // Visible only when the background check found a newer release
-                // (M8); it sits immediately left of the settings button.
-                if root.update-available: btn-update := DarkButton {
-                    icon: root.icon-update;
-                    has-icon: true;
-                    accessible-text: "Update available";
-                    width: 24px;
-                    clicked => {
-                        root.update-clicked();
-                    }
-                }
-
-                btn-settings := DarkButton {
-                    icon: root.icon-settings;
-                    has-icon: true;
-                    accessible-text: "Settings";
-                    width: 24px;
-                    clicked => {
-                        root.settings();
-                    }
-                }
-            }
-        }
-
-        if root.schema-warning != "": schema-banner := Rectangle {
-            height: 28px;
-            background: #4a3b12;
-            border-width: 1px;
-            border-color: #ffc107;
-            border-radius: 6px;
-
-            Text {
-                x: 10px;
-                y: (parent.height - self.height) / 2;
-                width: parent.width - 20px;
-                text: root.schema-warning;
-                font-size: 12px;
-                color: #ffc107;
-                overflow: TextOverflow.elide;
-            }
-        }
-
-        // The three vertically stacked sections (charts, request table,
-        // server info) separated by two draggable splitters. The section
-        // heights are derived from the `charts-frac`/`table-frac` fractions
-        // (FR-7.5); the server-info panel takes whatever is left.
-        content-area := Rectangle {
-            vertical-stretch: 1;
-
-            charts-area := Rectangle {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: root.charts-frac * Math.max(0px, parent.height - 16px);
-
-                charts-layout := VerticalLayout {
+                bottom-buttons := VerticalLayout {
                     spacing: 8px;
 
-                    chart-row-top := Rectangle {
-                        vertical-stretch: 1;
-
-                        widget-throughput := MetricWidget {
-                            x: 0;
-                            y: 0;
-                            width: (parent.width - 8px) / 2;
-                            height: parent.height;
-                            title: "Throughput (tok/s)";
-                            left-label: "Prefill";
-                            left-value: root.kpi-prefill-value;
-                            left-trend: root.kpi-prefill-trend;
-                            left-up-is-good: true;
-                            right-label: "Decode";
-                            right-value: root.kpi-decode-value;
-                            right-trend: root.kpi-decode-trend;
-                            right-up-is-good: true;
-                            chart-image: root.chart-throughput-image;
-                        }
-
-                        widget-latency := MetricWidget {
-                            x: (parent.width + 8px) / 2;
-                            y: 0;
-                            width: (parent.width - 8px) / 2;
-                            height: parent.height;
-                            title: "Latency";
-                            left-label: "TTFT";
-                            left-value: root.kpi-ttft-value;
-                            left-unit: root.kpi-ttft-unit;
-                            left-trend: root.kpi-ttft-trend;
-                            left-up-is-good: false;
-                            right-label: "Per-token lat";
-                            right-value: root.kpi-decode-lat-value;
-                            right-unit: root.kpi-decode-lat-unit;
-                            right-trend: root.kpi-decode-lat-trend;
-                            right-up-is-good: false;
-                            chart-image: root.chart-latency-image;
+                    // Visible only when the background check found a newer
+                    // release (M8); it sits above the About button. Both
+                    // bottom buttons use the tab-button style (a 24px icon
+                    // above a label) to match the tab buttons above.
+                    if root.update-available: btn-update := TabButton {
+                        label: "Update";
+                        icon: root.icon-update;
+                        clicked => {
+                            root.update-clicked();
                         }
                     }
 
-                    chart-row-bottom := Rectangle {
-                        vertical-stretch: 1;
-
-                        widget-cache := MetricWidget {
-                            x: 0;
-                            y: 0;
-                            width: (parent.width - 8px) / 2;
-                            height: parent.height;
-                            title: "Cache";
-                            left-label: "Cache hit";
-                            left-value: root.kpi-cache-value;
-                            left-unit: root.kpi-cache-unit;
-                            left-trend: root.kpi-cache-trend;
-                            left-up-is-good: true;
-                            right-label: "Spec. accept";
-                            right-value: root.kpi-spec-value;
-                            right-unit: root.kpi-spec-unit;
-                            right-trend: root.kpi-spec-trend;
-                            right-up-is-good: true;
-                            chart-image: root.chart-cache-image;
+                    btn-about := TabButton {
+                        label: "About";
+                        icon: root.icon-about;
+                        clicked => {
+                            root.about();
                         }
-
-                        widget-scheduler := MetricWidget {
-                            x: (parent.width + 8px) / 2;
-                            y: 0;
-                            width: (parent.width - 8px) / 2;
-                            height: parent.height;
-                            title: "Scheduler";
-                            show-flat-trend: false;
-                            left-label: "Active";
-                            left-value: root.kpi-active-value;
-                            left-trend: root.kpi-active-trend;
-                            left-up-is-good: true;
-                            right-label: "Waiting";
-                            right-value: root.kpi-waiting-value;
-                            right-trend: root.kpi-waiting-trend;
-                            right-up-is-good: false;
-                            chart-image: root.chart-scheduler-image;
-                        }
-                    }
-
-                    // One row per GPU (M4); hidden when NVML is unavailable
-                    // (the `gpu-devices` model is then empty).
-                    for gpu in root.gpu-devices: GpuRow {
-                        vertical-stretch: 1;
-                        device: gpu;
                     }
                 }
             }
+        }
 
-            splitter1 := Splitter {
-                x: 0;
-                y: charts-area.height;
-                width: parent.width;
-                height: 8px;
-                current-height: charts-area.height / 1px;
-                height-changed(h) => {
-                    let space = (content-area.height - 16px) / 1px;
-                    if space > 0 {
-                        root.split-changed(0, h / space);
-                    }
-                }
-                drag-ended(h) => {
-                    let space = (content-area.height - 16px) / 1px;
-                    if space > 0 {
-                        root.split-released(0, h / space);
-                    }
-                }
-            }
+        right-column := VerticalLayout {
+            spacing: 8px;
+            horizontal-stretch: 1;
 
-            inner-area := Rectangle {
-                x: 0;
-                y: charts-area.height + 8px;
-                width: parent.width;
-                height: Math.max(0px, parent.height - charts-area.height - 8px);
+            tab-content := Rectangle {
+                vertical-stretch: 1;
 
-                request-table := RequestTable {
+                // The Monitor tab content is always present so the chart widget
+                // sizes stay available to the `out property` below; the
+                // Control/Settings tabs are opaque overlays drawn on top when
+                // active.
+                monitor-tab := VerticalLayout {
                     x: 0;
                     y: 0;
                     width: parent.width;
-                    height: root.table-frac * Math.max(0px, parent.height - 8px);
-                    rows: root.request-rows;
-                    content-height: root.table-content-height;
-                    scroll-y <=> root.table-scroll-y;
-                    follow <=> root.table-follow;
-                    col-id: root.col-id;
-                    col-time: root.col-time;
-                    col-model: root.col-model;
-                    col-prompt: root.col-prompt;
-                    col-compl: root.col-compl;
-                    col-think: root.col-think;
-                    col-ttft: root.col-ttft;
-                    col-total: root.col-total;
-                    col-reason: root.col-reason;
-                    col-status: root.col-status;
-                    row-clicked(id) => {
-                        root.row-clicked(id);
+                    height: parent.height;
+                    spacing: 8px;
+
+                    header-bar := Rectangle {
+                        height: 40px;
+                        background: #252526;
+                        border-radius: 6px;
+
+                        HorizontalLayout {
+                            padding: 8px;
+                            spacing: 12px;
+
+                            win-1m := DarkButton {
+                                text: "1m";
+                                width: 36px;
+                                selected: root.chart-window-ms == 60000;
+                                clicked => {
+                                    root.window-changed(60000);
+                                }
+                            }
+
+                            win-5m := DarkButton {
+                                text: "5m";
+                                width: 36px;
+                                selected: root.chart-window-ms == 300000;
+                                clicked => {
+                                    root.window-changed(300000);
+                                }
+                            }
+
+                            win-15m := DarkButton {
+                                text: "15m";
+                                width: 36px;
+                                selected: root.chart-window-ms == 900000;
+                                clicked => {
+                                    root.window-changed(900000);
+                                }
+                            }
+
+                            win-30m := DarkButton {
+                                text: "30m";
+                                width: 36px;
+                                selected: root.chart-window-ms == 1800000;
+                                clicked => {
+                                    root.window-changed(1800000);
+                                }
+                            }
+
+                            win-1h := DarkButton {
+                                text: "1h";
+                                width: 36px;
+                                selected: root.chart-window-ms == 3600000;
+                                clicked => {
+                                    root.window-changed(3600000);
+                                }
+                            }
+                        }
                     }
-                    column-changed(slider, new-left) => {
-                        root.column-changed(slider, new-left);
+
+                    if root.schema-warning != "": schema-banner := Rectangle {
+                        height: 28px;
+                        background: #4a3b12;
+                        border-width: 1px;
+                        border-color: #ffc107;
+                        border-radius: 6px;
+
+                        Text {
+                            x: 10px;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width - 20px;
+                            text: root.schema-warning;
+                            font-size: 12px;
+                            color: #ffc107;
+                            overflow: TextOverflow.elide;
+                        }
                     }
-                    column-released(slider) => {
-                        root.column-released(slider);
+
+                    // The three vertically stacked sections (charts, request table,
+                    // server info) separated by two draggable splitters. The section
+                    // heights are derived from the `charts-frac`/`table-frac` fractions
+                    // (FR-7.5); the server-info panel takes whatever is left.
+                    content-area := Rectangle {
+                        vertical-stretch: 1;
+
+                        charts-area := Rectangle {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: root.charts-frac * Math.max(0px, parent.height - 16px);
+
+                            charts-layout := VerticalLayout {
+                                spacing: 8px;
+
+                                chart-row-top := Rectangle {
+                                    vertical-stretch: 1;
+
+                                    widget-throughput := MetricWidget {
+                                        x: 0;
+                                        y: 0;
+                                        width: (parent.width - 8px) / 2;
+                                        height: parent.height;
+                                        title: "Throughput (tok/s)";
+                                        left-label: "Prefill";
+                                        left-value: root.kpi-prefill-value;
+                                        left-trend: root.kpi-prefill-trend;
+                                        left-up-is-good: true;
+                                        right-label: "Decode";
+                                        right-value: root.kpi-decode-value;
+                                        right-trend: root.kpi-decode-trend;
+                                        right-up-is-good: true;
+                                        chart-image: root.chart-throughput-image;
+                                    }
+
+                                    widget-latency := MetricWidget {
+                                        x: (parent.width + 8px) / 2;
+                                        y: 0;
+                                        width: (parent.width - 8px) / 2;
+                                        height: parent.height;
+                                        title: "Latency";
+                                        left-label: "TTFT";
+                                        left-value: root.kpi-ttft-value;
+                                        left-unit: root.kpi-ttft-unit;
+                                        left-trend: root.kpi-ttft-trend;
+                                        left-up-is-good: false;
+                                        right-label: "Per-token lat";
+                                        right-value: root.kpi-decode-lat-value;
+                                        right-unit: root.kpi-decode-lat-unit;
+                                        right-trend: root.kpi-decode-lat-trend;
+                                        right-up-is-good: false;
+                                        chart-image: root.chart-latency-image;
+                                    }
+                                }
+
+                                chart-row-bottom := Rectangle {
+                                    vertical-stretch: 1;
+
+                                    widget-cache := MetricWidget {
+                                        x: 0;
+                                        y: 0;
+                                        width: (parent.width - 8px) / 2;
+                                        height: parent.height;
+                                        title: "Cache";
+                                        left-label: "Cache hit";
+                                        left-value: root.kpi-cache-value;
+                                        left-unit: root.kpi-cache-unit;
+                                        left-trend: root.kpi-cache-trend;
+                                        left-up-is-good: true;
+                                        right-label: "Spec. accept";
+                                        right-value: root.kpi-spec-value;
+                                        right-unit: root.kpi-spec-unit;
+                                        right-trend: root.kpi-spec-trend;
+                                        right-up-is-good: true;
+                                        chart-image: root.chart-cache-image;
+                                    }
+
+                                    widget-scheduler := MetricWidget {
+                                        x: (parent.width + 8px) / 2;
+                                        y: 0;
+                                        width: (parent.width - 8px) / 2;
+                                        height: parent.height;
+                                        title: "Scheduler";
+                                        show-flat-trend: false;
+                                        left-label: "Active";
+                                        left-value: root.kpi-active-value;
+                                        left-trend: root.kpi-active-trend;
+                                        left-up-is-good: true;
+                                        right-label: "Waiting";
+                                        right-value: root.kpi-waiting-value;
+                                        right-trend: root.kpi-waiting-trend;
+                                        right-up-is-good: false;
+                                        chart-image: root.chart-scheduler-image;
+                                    }
+                                }
+
+                                // One row per GPU (M4); hidden when NVML is unavailable
+                                // (the `gpu-devices` model is then empty).
+                                for gpu in root.gpu-devices: GpuRow {
+                                    vertical-stretch: 1;
+                                    device: gpu;
+                                }
+                            }
+                        }
+
+                        splitter1 := Splitter {
+                            x: 0;
+                            y: charts-area.height;
+                            width: parent.width;
+                            height: 8px;
+                            current-height: charts-area.height / 1px;
+                            height-changed(h) => {
+                                let space = (content-area.height - 16px) / 1px;
+                                if space > 0 {
+                                    root.split-changed(0, h / space);
+                                }
+                            }
+                            drag-ended(h) => {
+                                let space = (content-area.height - 16px) / 1px;
+                                if space > 0 {
+                                    root.split-released(0, h / space);
+                                }
+                            }
+                        }
+
+                        inner-area := Rectangle {
+                            x: 0;
+                            y: charts-area.height + 8px;
+                            width: parent.width;
+                            height: Math.max(0px, parent.height - charts-area.height - 8px);
+
+                            request-table := RequestTable {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: root.table-frac * Math.max(0px, parent.height - 8px);
+                                rows: root.request-rows;
+                                content-height: root.table-content-height;
+                                scroll-y <=> root.table-scroll-y;
+                                follow <=> root.table-follow;
+                                col-id: root.col-id;
+                                col-time: root.col-time;
+                                col-model: root.col-model;
+                                col-prompt: root.col-prompt;
+                                col-compl: root.col-compl;
+                                col-think: root.col-think;
+                                col-ttft: root.col-ttft;
+                                col-total: root.col-total;
+                                col-reason: root.col-reason;
+                                col-status: root.col-status;
+                                row-clicked(id) => {
+                                    root.row-clicked(id);
+                                }
+                                column-changed(slider, new-left) => {
+                                    root.column-changed(slider, new-left);
+                                }
+                                column-released(slider) => {
+                                    root.column-released(slider);
+                                }
+                            }
+
+                            splitter2 := Splitter {
+                                x: 0;
+                                y: request-table.height;
+                                width: parent.width;
+                                height: 8px;
+                                current-height: request-table.height / 1px;
+                                height-changed(h) => {
+                                    let space = (inner-area.height - 8px) / 1px;
+                                    if space > 0 {
+                                        root.split-changed(1, h / space);
+                                    }
+                                }
+                                drag-ended(h) => {
+                                    let space = (inner-area.height - 8px) / 1px;
+                                    if space > 0 {
+                                        root.split-released(1, h / space);
+                                    }
+                                }
+                            }
+
+                            server-info := ServerInfoPanel {
+                                x: 0;
+                                y: request-table.height + 8px;
+                                width: parent.width;
+                                height: Math.max(0px, parent.height - request-table.height - 8px);
+                                summary: root.server-info-summary;
+                                model: root.server-info-model;
+                                engine: root.server-info-engine;
+                                server: root.server-info-server;
+                            }
+                        }
+                    }
+
+                }
+
+                if root.active-tab == 0: control-tab := ControlPanel {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    config-rows: root.control-rows;
+                    selected-config: root.control-selected;
+                    start-enabled: root.control-start-enabled;
+                    restart-enabled: root.control-restart-enabled;
+                    stop-enabled: root.control-stop-enabled;
+                    delete-enabled: root.control-delete-enabled;
+                    status: root.control-status;
+                    status-error: root.control-status-error;
+                    name <=> root.control-name;
+                    command-line <=> root.control-command-line;
+                    focus-name-request: root.control-focus-name;
+                    control-split-frac: root.control-split-frac;
+                    delete-confirm-visible <=> root.control-delete-confirm-visible;
+                    delete-confirm-name <=> root.control-delete-confirm-name;
+                    config-selected(index) => {
+                        root.control-config-selected(index);
+                    }
+                    add-clicked() => {
+                        root.control-add();
+                    }
+                    start-clicked() => {
+                        root.control-start();
+                    }
+                    restart-clicked() => {
+                        root.control-restart();
+                    }
+                    stop-clicked() => {
+                        root.control-stop();
+                    }
+                    edit-paused(name, command-line) => {
+                        root.control-edit-paused(name, command-line);
+                    }
+                    name-focus-changed(has-focus) => {
+                        root.control-name-has-focus = has-focus;
+                    }
+                    control-split-changed(frac) => {
+                        root.control-split-changed(frac);
+                    }
+                    control-split-released(frac) => {
+                        root.control-split-released(frac);
                     }
                 }
 
-                splitter2 := Splitter {
+                if root.active-tab == 2: settings-panel := SettingsPanel {
                     x: 0;
-                    y: request-table.height;
+                    y: 0;
                     width: parent.width;
-                    height: 8px;
-                    current-height: request-table.height / 1px;
-                    height-changed(h) => {
-                        let space = (inner-area.height - 8px) / 1px;
-                        if space > 0 {
-                            root.split-changed(1, h / space);
+                    height: parent.height;
+                    log-poll-ms <=> root.settings-log-poll-ms;
+                    gpu-poll-ms <=> root.settings-gpu-poll-ms;
+                    max-requests <=> root.settings-max-requests;
+                    install-folder <=> root.settings-install-folder;
+                    log-file-folder <=> root.settings-log-file-folder;
+                    save-enabled: root.settings-save-enabled;
+                    import-enabled: root.settings-import-enabled;
+                    import-status: root.settings-import-status;
+                    temp-unit <=> root.settings-temp-unit;
+                    update-check-enabled <=> root.settings-update-check-enabled;
+                    update-check-days <=> root.settings-update-check-days;
+                    nvidia-popup-visible: root.nvidia-popup-visible;
+                    nvidia-popup-status: root.nvidia-popup-status;
+                    save() => {
+                        root.settings-save(
+                            root.settings-log-poll-ms,
+                            root.settings-gpu-poll-ms,
+                            root.settings-max-requests,
+                            root.settings-install-folder,
+                            root.settings-log-file-folder,
+                            root.settings-temp-unit,
+                            root.settings-update-check-enabled,
+                            root.settings-update-check-days
+                        );
+                    }
+                    discard() => {
+                        root.settings-discard();
+                    }
+                    escape() => {
+                        if root.latest-version-visible {
+                            root.latest-version-close();
+                        } else if root.about-visible {
+                            root.about-close();
+                        } else {
+                            root.settings-discard();
                         }
                     }
-                    drag-ended(h) => {
-                        let space = (inner-area.height - 8px) / 1px;
-                        if space > 0 {
-                            root.split-released(1, h / space);
-                        }
+                    open-folder() => {
+                        root.settings-open-folder();
                     }
-                }
-
-                server-info := ServerInfoPanel {
-                    x: 0;
-                    y: request-table.height + 8px;
-                    width: parent.width;
-                    height: Math.max(0px, parent.height - request-table.height - 8px);
-                    summary: root.server-info-summary;
-                    model: root.server-info-model;
-                    engine: root.server-info-engine;
-                    server: root.server-info-server;
+                    open-log-folder() => {
+                        root.settings-open-log-folder();
+                    }
+                    install-folder-edited(text) => {
+                        root.settings-install-folder-edited(text);
+                    }
+                    log-file-folder-edited(text) => {
+                        root.settings-log-file-folder-edited(text);
+                    }
+                    check-updates() => {
+                        root.settings-check-updates();
+                    }
+                    import-configs() => {
+                        root.settings-import-configs();
+                    }
+                    nvidia-popup() => {
+                        root.nvidia-popup();
+                    }
                 }
             }
-        }
 
-        status-bar := StatusBar {
-            status-text: root.connection-status;
-            status-color: root.status-color;
-            file-name: root.file-name;
-            file-name-full: root.file-name-full;
-            last-event: root.last-event;
-            errors-text: root.errors-text;
-            skipped-text: root.skipped-text;
+            status-bar := StatusBar {
+                status-text: root.connection-status;
+                status-color: root.status-color;
+                install-folder: root.install-folder;
+                install-folder-full: root.install-folder-full;
+                last-event: root.last-event;
+                errors-text: root.errors-text;
+                skipped-text: root.skipped-text;
+            }
         }
     }
 
@@ -505,7 +743,7 @@ export component MainWindow inherits Window {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             width: 560px;
-            height: 320px;
+            height: Math.max(content-layout.preferred-height, 200px);
             background: #252526;
             border-radius: 6px;
             border-width: 1px;
@@ -519,12 +757,13 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                VerticalLayout {
+                content-layout := VerticalLayout {
                     padding: 48px;
                     spacing: 12px;
 
-                    header-row := HorizontalLayout {
+                    header := VerticalLayout {
                         spacing: 12px;
+                        alignment: center;
                         cross-axis-alignment: center;
 
                         startup-icon := Image {
@@ -542,6 +781,7 @@ export component MainWindow inherits Window {
                                 font-size: 18px;
                                 font-weight: 700;
                                 color: #e0e0e0;
+                                horizontal-alignment: center;
                             }
 
                             Text {
@@ -562,23 +802,23 @@ export component MainWindow inherits Window {
                         spacing: 8px;
                         cross-axis-alignment: center;
 
-                        startup-file-input := LineEdit {
+                        startup-folder-input := LineEdit {
                             horizontal-stretch: 1;
-                            text <=> root.startup-file;
-                            placeholder-text: "Path to server.requests.jsonl";
+                            text <=> root.startup-folder;
+                            placeholder-text: "Path to the NInfer installation folder";
                             edited(text) => {
-                                root.startup-file-edited(text);
+                                root.startup-folder-edited(text);
                             }
                         }
 
                         startup-btn-open := DarkButton {
-                            text: "Open File...";
+                            text: "Open Folder...";
                             icon: root.icon-open;
                             has-icon: true;
                             width: 110px;
                             height: 24px;
                             clicked => {
-                                root.startup-open-file();
+                                root.startup-open-folder();
                             }
                         }
                     }
@@ -623,65 +863,6 @@ export component MainWindow inherits Window {
                     scope.focus();
                 }
             }
-        }
-    }
-
-    if root.settings-visible: settings-backdrop := Rectangle {
-        width: parent.width;
-        height: parent.height;
-        background: #000000aa;
-
-        TouchArea {
-            width: parent.width;
-            height: parent.height;
-            clicked => {
-                root.settings-close();
-            }
-        }
-    }
-
-    if root.settings-visible: settings-panel := SettingsPanel {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        width: 570px;
-        log-poll-ms <=> root.settings-log-poll-ms;
-        gpu-poll-ms <=> root.settings-gpu-poll-ms;
-        max-requests <=> root.settings-max-requests;
-        file <=> root.settings-file;
-        temp-unit <=> root.settings-temp-unit;
-        update-check-enabled <=> root.settings-update-check-enabled;
-        update-check-days <=> root.settings-update-check-days;
-        nvidia-popup-visible: root.nvidia-popup-visible;
-        nvidia-popup-status: root.nvidia-popup-status;
-        save() => {
-            root.settings-save(
-                root.settings-log-poll-ms,
-                root.settings-gpu-poll-ms,
-                root.settings-max-requests,
-                root.settings-file,
-                root.settings-temp-unit,
-                root.settings-update-check-enabled,
-                root.settings-update-check-days
-            );
-        }
-        close() => {
-            root.settings-close();
-        }
-        about() => {
-            root.about();
-        }
-        escape() => {
-            if root.about-visible {
-                root.about-close();
-            } else {
-                root.settings-close();
-            }
-        }
-        open-file() => {
-            root.settings-open-file();
-        }
-        nvidia-popup() => {
-            root.nvidia-popup();
         }
     }
 
@@ -739,6 +920,58 @@ export component MainWindow inherits Window {
         }
         release-notes() => {
             root.release-notes();
+        }
+    }
+
+    if root.latest-version-visible: latest-version-backdrop := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #000000aa;
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.latest-version-close();
+            }
+        }
+    }
+
+    if root.latest-version-visible: latest-version-panel := LatestVersionPanel {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 420px;
+        version: root.latest-version;
+        close() => {
+            root.latest-version-close();
+        }
+    }
+
+    if root.control-delete-confirm-visible: control-delete-confirm-backdrop := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #000000aa;
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.control-delete-confirm-visible = false;
+            }
+        }
+    }
+
+    if root.control-delete-confirm-visible: control-delete-confirm-panel := ConfirmDeletePanel {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 380px;
+        config-name: root.control-delete-confirm-name;
+        confirm() => {
+            root.control-delete-confirm-visible = false;
+            root.control-delete();
+        }
+        cancel() => {
+            root.control-delete-confirm-visible = false;
         }
     }
 }

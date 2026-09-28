@@ -223,8 +223,8 @@ impl Pipeline {
 impl Drop for Pipeline {
     /// A dropped pipeline stops and joins its threads (bounded: the parse
     /// thread wakes within `PUSH_INTERVAL`, the tail thread within one sleep
-    /// slice), so a replaced pipeline (Open file…) doesn't leave detached
-    /// threads reading the old file.
+    /// slice), so a replaced pipeline (startup Start, Settings Save) doesn't
+    /// leave detached threads reading the old file.
     fn drop(&mut self) {
         self.stop_inner();
     }
@@ -247,9 +247,9 @@ pub fn format_last_event(time: SystemTime) -> String {
     local.format("%H:%M:%S%.3f").to_string()
 }
 
-/// The log-file name for the status bar (PRD §10): names longer than 32
-/// characters keep 15 characters on each side with an ellipsis in the
-/// middle.
+/// The install-folder name for the status bar (PRD v0.3 §3.7, M2): names
+/// longer than 32 characters keep 15 characters on each side with an
+/// ellipsis in the middle.
 pub fn shorten_file_name(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() <= 32 {

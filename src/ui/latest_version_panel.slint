@@ -5,9 +5,8 @@
 // Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
 
 import { DarkButton } from "dark_button.slint";
-import { AboutSlint } from "std-widgets.slint";
 
-export component AboutPanel inherits Rectangle {
+export component LatestVersionPanel inherits Rectangle {
     in property <string> version: "";
 
     callback close();
@@ -36,7 +35,7 @@ export component AboutPanel inherits Rectangle {
             spacing: 12px;
 
             Text {
-                text: "About";
+                text: "Up to date";
                 font-size: 18px;
                 font-weight: 700;
                 color: #e0e0e0;
@@ -46,44 +45,12 @@ export component AboutPanel inherits Rectangle {
                 height: 16px;
             }
 
-            about-texts := HorizontalLayout {
-                spacing: 12px;
-                cross-axis-alignment: center;
-
-                app-icon := Image {
-                    source: @image-url("icons/app_icon.png");
-                    width: 48px;
-                    height: 48px;
-                }
-
-                app-info := VerticalLayout {
-                    spacing: 6px;
-
-                    Text {
-                        text: root.version == "" ? "NInferMonitor" : "NInferMonitor v" + root.version;
-                        font-size: 13px;
-                        color: #e0e0e0;
-                    }
-
-                    Text {
-                        text: "Copyright (C) 2026 Aleksey Sanin";
-                        font-size: 12px;
-                        color: #9e9e9e;
-                    }
-                }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
-            }
-
-            // Slint attribution (Royalty-Free License, section 2a).
-            slint-attribution := HorizontalLayout {
-                alignment: center;
-
-                AboutSlint {
-                    width: 152px;
-                }
+            latest-version-text := Text {
+                text: "You are currently running the latest available version " + root.version + ".";
+                font-size: 13px;
+                color: #e0e0e0;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
             }
 
             Rectangle {

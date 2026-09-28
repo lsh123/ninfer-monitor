@@ -799,6 +799,15 @@ mod tests {
     }
 
     #[test]
+    fn ten_megabyte_line_parses() {
+        let pad = "x".repeat(10_000_000);
+        let raw = format!("{{{ENVELOPE},\"event\":\"throughput\",\"pad\":\"{pad}\"}}");
+        let ParsedEvent::Throughput(_) = parse_line(raw.as_bytes()).unwrap() else {
+            panic!("expected Throughput");
+        };
+    }
+
+    #[test]
     fn server_start_round_trip_schema_20() {
         let raw = format!(
             r#"{{{ENVELOPE},"event":"server_start",

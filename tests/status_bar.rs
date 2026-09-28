@@ -55,39 +55,44 @@ fn elem(window: &MainWindow, id: &str) -> ElementHandle {
 #[test]
 fn status_change_does_not_shift_items() {
     let window = new_window();
-    window.set_file_name("tests/fixtures/server.requests.jsonl".into());
-    window.set_file_name_full("tests/fixtures/server.requests.jsonl".into());
+    window.set_install_folder("C:\\NInfer".into());
+    window.set_install_folder_full("C:\\NInfer".into());
     window.set_last_event("14:02:58.124".into());
     window.set_connection_status("Live".into());
     let _ = window.window().take_snapshot();
 
-    let file_live = elem(&window, "StatusBar::file-text").absolute_position();
+    let folder_live = elem(&window, "StatusBar::folder-text").absolute_position();
     let time_live = elem(&window, "StatusBar::time-label").absolute_position();
 
     window.set_connection_status("Disconnected".into());
     let _ = window.window().take_snapshot();
-    let file_disc = elem(&window, "StatusBar::file-text").absolute_position();
+    let folder_disc = elem(&window, "StatusBar::folder-text").absolute_position();
     let time_disc = elem(&window, "StatusBar::time-label").absolute_position();
     assert_eq!(time_live, time_disc, "timestamp shifted on disconnect");
-    assert_eq!(file_live, file_disc, "file name shifted on disconnect");
+    assert_eq!(
+        folder_live, folder_disc,
+        "folder name shifted on disconnect"
+    );
 
     let time_size = elem(&window, "StatusBar::time-label").size();
-    let gap = file_live.x - (time_live.x + time_size.width);
+    let gap = folder_live.x - (time_live.x + time_size.width);
     assert!((gap - 12.0).abs() < 0.5, "expected ~12px gap, got {gap}");
 }
 
 #[test]
-fn file_measure_text_is_hidden() {
+fn folder_measure_text_is_hidden() {
     let window = new_window();
-    window.set_file_name("tests/fixtures/server.requests.jsonl".into());
-    window.set_file_name_full("tests/fixtures/server.requests.jsonl".into());
+    window.set_install_folder("C:\\NInfer".into());
+    window.set_install_folder_full("C:\\NInfer".into());
     let snap1 = window.window().take_snapshot().expect("snapshot");
     let rgba1: Vec<u8> = snap1
         .as_slice()
         .iter()
         .flat_map(|p| [p.r, p.g, p.b, p.a])
         .collect();
-    window.set_file_name_full("a_totally_different_long_name_for_measuring_purposes.jsonl".into());
+    window.set_install_folder_full(
+        "a_totally_different_long_folder_name_for_measuring_purposes".into(),
+    );
     let snap2 = window.window().take_snapshot().expect("snapshot");
     let rgba2: Vec<u8> = snap2
         .as_slice()
@@ -97,22 +102,25 @@ fn file_measure_text_is_hidden() {
     let differing = (0..rgba1.len().min(rgba2.len()) / 4)
         .filter(|&i| rgba1[i * 4..i * 4 + 4] != rgba2[i * 4..i * 4 + 4])
         .count();
-    assert_eq!(differing, 0, "file measure text is leaking into the render");
+    assert_eq!(
+        differing, 0,
+        "folder measure text is leaking into the render"
+    );
 }
 
 #[test]
 fn shortening_decision() {
     let window = new_window();
-    let long = "d:/some/very/long/path/with/many/components/in/it/server.requests.jsonl";
-    window.set_file_name_full(long.into());
+    let long = "d:/some/very/long/path/with/many/components/in/it/ninfer";
+    window.set_install_folder_full(long.into());
     let _ = window.window().take_snapshot();
 
-    let full_width = window.get_file_full_width();
-    let available = window.get_file_available();
-    let file_w = elem(&window, "StatusBar::file-text").size().width;
+    let full_width = window.get_install_folder_full_width();
+    let available = window.get_install_folder_available();
+    let folder_w = elem(&window, "StatusBar::folder-text").size().width;
     assert!(
-        (available - file_w).abs() < 1.0,
-        "file-available must match the file text's actual layout width"
+        (available - folder_w).abs() < 1.0,
+        "install-folder-available must match the folder text's actual layout width"
     );
     assert!(
         full_width <= available,
@@ -125,14 +133,11 @@ fn shortening_decision() {
             1024.0, HEIGHT,
         )));
     let _ = window.window().take_snapshot();
-    let very_long = format!(
-        "d:/{}server.requests.jsonl",
-        "a_very_long_directory_name/".repeat(6)
-    );
-    window.set_file_name_full(very_long.into());
+    let very_long = format!("d:/{}ninfer", "a_very_long_directory_name/".repeat(6));
+    window.set_install_folder_full(very_long.into());
     let _ = window.window().take_snapshot();
-    let full_width = window.get_file_full_width();
-    let available = window.get_file_available();
+    let full_width = window.get_install_folder_full_width();
+    let available = window.get_install_folder_available();
     assert!(
         full_width > available,
         "very long name must not fit at 1024px (shortened form shown)"

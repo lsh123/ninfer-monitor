@@ -7,12 +7,15 @@
 pub mod chart;
 pub mod columns;
 pub mod config;
+pub mod config_import;
+pub mod configs;
 pub mod gpu;
 pub mod kpi;
 pub mod metrics;
 pub mod nvidia_popup;
 pub mod parser;
 pub mod pipeline;
+pub mod process_control;
 pub mod requests;
 pub mod server_info;
 pub mod split;
