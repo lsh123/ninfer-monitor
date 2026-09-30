@@ -1,7 +1,5 @@
 # NInferMonitor
 
-[![#MadeWithSlint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
-
 A cross-platform desktop app (Rust + Slint + Plotters) that monitors and
 controls the NInfer inference server. It tails the server request log
 (`server.requests.jsonl`, JSON Lines) in real time — `tail -f` semantics — and
@@ -144,5 +142,10 @@ the **Update** (when a new release is available) and **About** buttons.
 
 ## License
 
-See [LICENSE.md](LICENSE.md). The UI is built with [Slint](https://slint.dev);
-the About dialog includes Slint's `AboutSlint` attribution widget.
+See [LICENSE.md](LICENSE.md).
+
+The UI is built with [Slint](https://slint.dev); the About dialog includes 
+Slint's `AboutSlint` attribution widget.
+
+[![#MadeWithSlint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
+
