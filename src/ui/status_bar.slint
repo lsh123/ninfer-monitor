@@ -7,8 +7,8 @@
 export component StatusBar inherits Rectangle {
     in property <string> status-text: "—";
     in property <color> status-color: #9e9e9e;
-    in property <string> file-name: "";
-    in property <string> file-name-full: "";
+    in property <string> install-folder: "";
+    in property <string> install-folder-full: "";
     in property <string> last-event: "—";
     in property <string> errors-text: "Errors: 0";
     in property <string> skipped-text: "Skipped 0";
@@ -39,18 +39,18 @@ export component StatusBar inherits Rectangle {
         visible: false;
     }
 
-    // Natural width of the full "Log file: <name>" text.
-    file-measure := Text {
-        text: root.file-name-full == "" ? "No file selected" : "Log file: " + root.file-name-full;
+    // Natural width of the full "NInfer folder: <name>" text.
+    folder-measure := Text {
+        text: root.install-folder-full == "" ? "No folder selected" : "NInfer folder: " + root.install-folder-full;
         font-size: 11px;
         visible: false;
     }
 
-    out property <length> file-full-width: file-measure.width;
+    out property <length> install-folder-full-width: folder-measure.width;
 
-    // Space available for the file-name text: the file text's actual layout
+    // Space available for the folder text: the folder text's actual layout
     // width (the stretch area between the left group and the right counters).
-    out property <length> file-available: file-text.width;
+    out property <length> install-folder-available: folder-text.width;
 
     HorizontalLayout {
         padding: root.bar-padding;
@@ -84,9 +84,9 @@ export component StatusBar inherits Rectangle {
             }
         }
 
-        file-text := Text {
+        folder-text := Text {
             horizontal-stretch: 1;
-            text: root.file-name-full == "" ? "No file selected" : "Log file: " + root.file-name;
+            text: root.install-folder-full == "" ? "No folder selected" : "NInfer folder: " + root.install-folder;
             font-size: 11px;
             color: #9e9e9e;
             overflow: TextOverflow.elide;

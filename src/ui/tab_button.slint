@@ -1,0 +1,66 @@
+// NInferMonitor
+//
+// This is free software; see the LICENSE.md file in the source distribution for precise wording.
+//
+// Copyright (C) 2026 Aleksey Sanin aleksey@aleksey.com. All Rights Reserved.
+
+export component TabButton inherits Rectangle {
+    in property <string> label: "";
+    in property <image> icon;
+    in property <bool> selected: false;
+    property <bool> has-focus: scope.has-focus;
+    callback clicked();
+
+    height: 48px;
+    background: root.selected ? #2d5a88 : #333333;
+    border-radius: 4px;
+    border-width: root.has-focus ? 2px : 0px;
+    border-color: #4fc3f7;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    forward-focus: scope;
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    scope := FocusScope {
+        x: 0;
+        width: 0;
+        focus-on-tab-navigation: true;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                ta.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        alignment: center;
+        cross-axis-alignment: center;
+        spacing: 4px;
+
+        Image {
+            source: root.icon;
+            width: 24px;
+            height: 24px;
+        }
+
+        Text {
+            text: root.label;
+            font-size: 12px;
+            color: #e0e0e0;
+        }
+    }
+}

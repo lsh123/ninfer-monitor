@@ -11,7 +11,11 @@ export component SettingsPanel inherits Rectangle {
     in-out property <int> log-poll-ms: 500;
     in-out property <int> gpu-poll-ms: 5000;
     in-out property <int> max-requests: 1000;
-    in-out property <string> file: "";
+    in-out property <string> install-folder: "";
+    in-out property <string> log-file-folder: "";
+    in property <bool> save-enabled: true;
+    in property <bool> import-enabled: false;
+    in property <string> import-status: "";
     in-out property <string> temp-unit: "F";
     in-out property <bool> update-check-enabled: true;
     in-out property <int> update-check-days: 3;
@@ -19,27 +23,24 @@ export component SettingsPanel inherits Rectangle {
     in property <string> nvidia-popup-status: "";
 
     callback save();
-    callback close();
-    callback about();
+    callback discard();
     callback escape();
-    callback open-file();
+    callback open-folder();
+    callback open-log-folder();
     callback nvidia-popup();
+    callback check-updates();
+    callback import-configs();
+    callback install-folder-edited(text: string);
+    callback log-file-folder-edited(text: string);
 
     background: #252526;
     border-radius: 6px;
     border-width: 1px;
     border-color: #3c3c3c;
-    height: content-layout.preferred-height;
 
     click-blocker := TouchArea {
         width: parent.width;
         height: parent.height;
-    }
-
-    about-measure := Text {
-        text: "About";
-        font-size: 12px;
-        visible: false;
     }
 
     nvidia-measure := Text {
@@ -71,24 +72,90 @@ export component SettingsPanel inherits Rectangle {
                 height: 16px;
             }
 
-            HorizontalLayout {
-                spacing: 8px;
-                cross-axis-alignment: center;
+            VerticalLayout {
+                spacing: 6px;
 
-                file-input := LineEdit {
-                    horizontal-stretch: 1;
-                    text <=> root.file;
-                    placeholder-text: "Path to server.requests.jsonl";
+                install-folder-label := Text {
+                    text: "NInfer installation folder";
+                    font-size: 12px;
+                    color: #9e9e9e;
                 }
 
-                btn-open-file := DarkButton {
-                    text: "Open File...";
-                    icon: @image-url("icons/open_folder.svg");
-                    has-icon: true;
-                    width: 110px;
-                    height: 24px;
-                    clicked => {
-                        root.open-file();
+                HorizontalLayout {
+                    spacing: 8px;
+                    cross-axis-alignment: center;
+
+                    install-folder-input := LineEdit {
+                        horizontal-stretch: 1;
+                        text <=> root.install-folder;
+                        placeholder-text: "Path to the NInfer installation folder";
+                        edited(text) => {
+                            root.install-folder-edited(text);
+                        }
+                    }
+
+                    btn-open-folder := DarkButton {
+                        text: "Open Folder...";
+                        icon: @image-url("icons/open_folder.svg");
+                        has-icon: true;
+                        width: 110px;
+                        height: 24px;
+                        clicked => {
+                            root.open-folder();
+                        }
+                    }
+
+                    btn-import-configs := DarkButton {
+                        text: "Import Configurations";
+                        width: 160px;
+                        height: 24px;
+                        disabled: !root.import-enabled;
+                        clicked => {
+                            root.import-configs();
+                        }
+                    }
+                }
+
+                import-status-text := Text {
+                    text: root.import-status;
+                    font-size: 12px;
+                    color: #9e9e9e;
+                    visible: root.import-status != "";
+                    overflow: elide;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+
+                log-file-folder-label := Text {
+                    text: "Log file folder";
+                    font-size: 12px;
+                    color: #9e9e9e;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    cross-axis-alignment: center;
+
+                    log-file-folder-input := LineEdit {
+                        horizontal-stretch: 1;
+                        text <=> root.log-file-folder;
+                        placeholder-text: "Folder containing the ninfer-monitor log file";
+                        edited(text) => {
+                            root.log-file-folder-edited(text);
+                        }
+                    }
+
+                    btn-open-log-folder := DarkButton {
+                        text: "Open Folder...";
+                        icon: @image-url("icons/open_folder.svg");
+                        has-icon: true;
+                        width: 110px;
+                        height: 24px;
+                        clicked => {
+                            root.open-log-folder();
+                        }
                     }
                 }
             }
@@ -217,6 +284,7 @@ export component SettingsPanel inherits Rectangle {
             }
 
             VerticalLayout {
+                vertical-stretch: 0;
                 spacing: 6px;
 
                 temp-label := Text {
@@ -331,6 +399,21 @@ export component SettingsPanel inherits Rectangle {
                 }
             }
 
+            HorizontalLayout {
+                btn-check-updates := DarkButton {
+                    text: "Check for updates";
+                    width: 120px;
+                    height: 24px;
+                    clicked => {
+                        root.check-updates();
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+
             Rectangle {
                 height: 16px;
             }
@@ -385,67 +468,30 @@ export component SettingsPanel inherits Rectangle {
                 }
             }
 
-            about-row := HorizontalLayout {
-                spacing: 0px;
-
-                about-link := Rectangle {
-                    width: about-measure.width;
-                    height: about-measure.height + 2px;
-
-                    about-text := Text {
-                        x: 0;
-                        y: 0;
-                        text: "About";
-                        font-size: 12px;
-                        color: #4fc3f7;
-                    }
-
-                    about-underline := Rectangle {
-                        x: 0;
-                        y: about-measure.height;
-                        width: about-measure.width;
-                        height: 1px;
-                        background: #4fc3f7;
-                    }
-
-                    ta := TouchArea {
-                        width: parent.width;
-                        height: parent.height;
-                        mouse-cursor: MouseCursor.pointer;
-                        clicked => {
-                            root.about();
-                        }
-                    }
-                }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
-            }
-
             Rectangle {
-                height: 16px;
+                vertical-stretch: 1;
             }
 
             HorizontalLayout {
                 alignment: center;
                 spacing: 8px;
 
-                btn-ok := DarkButton {
-                    text: "OK";
+                btn-save := DarkButton {
+                    text: "Save";
                     width: 90px;
                     height: 24px;
+                    disabled: !root.save-enabled;
                     clicked => {
                         root.save();
                     }
                 }
 
-                btn-cancel := DarkButton {
-                    text: "Cancel";
+                btn-discard := DarkButton {
+                    text: "Discard";
                     width: 90px;
                     height: 24px;
                     clicked => {
-                        root.close();
+                        root.discard();
                     }
                 }
             }

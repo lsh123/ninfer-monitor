@@ -1,6 +1,6 @@
 [package]
 name = "ninfer-monitor"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Real-time dashboard for the NInfer server request log (server.requests.jsonl)"
 

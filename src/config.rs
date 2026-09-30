@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::columns::{TableColumns, parse_table_columns};
 use crate::gpu::TempUnit;
@@ -28,20 +28,46 @@ pub const DEFAULT_WINDOW_MS: u64 = 300_000;
 pub const MIN_MAX_REQUESTS: u64 = 10;
 pub const MAX_MAX_REQUESTS: u64 = 1_000;
 pub const DEFAULT_MAX_REQUESTS: u64 = 1_000;
+/// The Control-tab split: the default share of the middle area given to the
+/// configurations list (the edit panel takes the rest).
+pub const DEFAULT_CONTROL_SPLIT: f32 = 0.5;
+/// The Control-tab split: the configurations list may take at most this share
+/// of the middle area, leaving at least `1 - MAX_CONTROL_SPLIT` for the edit
+/// panel.
+pub const MAX_CONTROL_SPLIT: f32 = 0.7;
+/// The Control-tab split: the configurations list may take at least this
+/// share of the middle area.
+pub const MIN_CONTROL_SPLIT: f32 = 0.15;
 
 pub const CONFIG_DIR: &str = ".ninfer-monitor";
 pub const CONFIG_FILE: &str = "config.json";
 
-/// Persisted settings (FR-7.2): last log path, log file poll interval, GPU
-/// poll interval, chart window, max request rows, temperature unit,
-/// split-panel fractions, request-table column widths, window geometry, and
-/// the automatic update-check state (M8).
+/// A single NInfer configuration (v0.3 M3): a name and the command line
+/// options (an opaque string the app does not parse, except to scan for
+/// `--request-log-jsonl`, §4.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigEntry {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub command_line: String,
+}
+
+/// Persisted settings (FR-7.2): NInfer installation folder, log file
+/// folder, log file poll interval, GPU poll interval, chart window, max
+/// request rows, temperature unit, split-panel fractions, request-table
+/// column widths, window geometry, and the automatic update-check state
+/// (M8).
 ///
 /// Unknown fields are ignored (forward compatibility); missing fields fall
 /// back to the defaults below.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Config {
-    pub last_path: Option<String>,
+    /// The NInfer installation folder, if any (v0.3 M2).
+    pub install_folder: Option<String>,
+    /// The base folder for the app-managed log file (v0.3 M2); the monitored
+    /// file is `<log_file_folder>/ninfer-monitor/server.requests.jsonl`.
+    pub log_file_folder: String,
     pub log_poll_interval_ms: u64,
     pub gpu_poll_interval_ms: u64,
     pub chart_window_ms: u64,
@@ -49,6 +75,9 @@ pub struct Config {
     /// GPU temperature display unit, stored as `"F"` or `"C"` (M4).
     pub temp_unit: String,
     pub split_panels: SplitPanels,
+    /// The Control-tab split: the share of the middle area given to the
+    /// configurations list (the edit panel takes the rest).
+    pub control_split: f32,
     /// The request-table column widths and the window width they were saved
     /// at (M7); restored only when the window width is unchanged.
     pub table_columns: Option<TableColumns>,
@@ -60,23 +89,35 @@ pub struct Config {
     /// The time of the last successful update check, in unix milliseconds
     /// (M8); `None` when a check has never succeeded.
     pub last_update_check_unix_ms: Option<u64>,
+    /// The registered NInfer configurations (v0.3 M3).
+    pub configs: Vec<ConfigEntry>,
+    pub running_config: Option<String>,
+}
+
+/// The default log file folder: the OS temp folder (v0.3 M2).
+pub fn default_log_file_folder() -> String {
+    std::env::temp_dir().to_string_lossy().to_string()
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            last_path: None,
+            install_folder: None,
+            log_file_folder: default_log_file_folder(),
             log_poll_interval_ms: DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64,
             gpu_poll_interval_ms: DEFAULT_GPU_POLL_MS,
             chart_window_ms: DEFAULT_WINDOW_MS,
             max_requests: DEFAULT_MAX_REQUESTS,
             temp_unit: TempUnit::DEFAULT.as_str().to_owned(),
             split_panels: SplitPanels::default(),
+            control_split: DEFAULT_CONTROL_SPLIT,
             table_columns: None,
             window_state: None,
             update_check_enabled: true,
             update_check_period_days: crate::update_check::DEFAULT_PERIOD_DAYS,
             last_update_check_unix_ms: None,
+            configs: Vec::new(),
+            running_config: None,
         }
     }
 }
@@ -117,6 +158,12 @@ impl Config {
     /// The update-check period clamped to the supported range (M8).
     pub fn update_check_period_days(&self) -> u64 {
         clamp_period_days(self.update_check_period_days)
+    }
+
+    /// The Control-tab split fraction clamped to the supported range.
+    pub fn control_split(&self) -> f32 {
+        self.control_split
+            .clamp(MIN_CONTROL_SPLIT, MAX_CONTROL_SPLIT)
     }
 }
 
@@ -185,8 +232,22 @@ pub fn load_with_state(path: &Path) -> (Config, ConfigFileState) {
         return (Config::default(), ConfigFileState::Malformed);
     };
     let mut config = Config::default();
-    if let Some(value) = object.get("last_path").and_then(|v| v.as_str()) {
-        config.last_path = Some(value.to_owned());
+    if let Some(value) = object.get("install_folder").and_then(|v| v.as_str()) {
+        if !value.trim().is_empty() {
+            config.install_folder = Some(value.to_owned());
+        }
+    } else if let Some(value) = object.get("last_path").and_then(|v| v.as_str()) {
+        // One-time migration (v0.3 M2): a v0.2 `last_path` pointing at
+        // `<install>/logs/server.requests.jsonl` implies the install folder;
+        // any other path is not an install folder and is dropped.
+        config.install_folder = legacy_install_folder(value);
+    }
+    if let Some(value) = object.get("log_file_folder").and_then(|v| v.as_str()) {
+        config.log_file_folder = if value.trim().is_empty() {
+            default_log_file_folder()
+        } else {
+            value.to_owned()
+        };
     }
     if let Some(value) = object.get("log_poll_interval_ms").and_then(|v| v.as_u64()) {
         config.log_poll_interval_ms = value;
@@ -205,6 +266,9 @@ pub fn load_with_state(path: &Path) -> (Config, ConfigFileState) {
     }
     if let Some(panels) = object.get("split_panels").and_then(|v| v.as_object()) {
         config.split_panels = parse_split_panels(panels);
+    }
+    if let Some(value) = object.get("control_split").and_then(|v| v.as_f64()) {
+        config.control_split = value as f32;
     }
     if let Some(columns) = object.get("table_columns").and_then(|v| v.as_object()) {
         config.table_columns = parse_table_columns(columns);
@@ -227,12 +291,72 @@ pub fn load_with_state(path: &Path) -> (Config, ConfigFileState) {
     {
         config.last_update_check_unix_ms = Some(value);
     }
+    if let Some(value) = object.get("configs") {
+        config.configs = parse_configs(value);
+    }
+    if let Some(value) = object
+        .get("running_config")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+    {
+        config.running_config = Some(value.to_owned());
+    }
     (config, ConfigFileState::Valid)
 }
 
 /// Load the config from `path` (see `load_with_state`).
 pub fn load(path: &Path) -> Config {
     load_with_state(path).0
+}
+
+/// Tolerantly parse the `configs` field (v0.3 M3): a JSON array of objects
+/// with `name` and `command_line` strings. A missing or non-array value
+/// yields an empty list; a non-object entry is skipped independently of the
+/// others; a missing or wrong-typed field inside an entry falls back to the
+/// empty string.
+pub fn parse_configs(value: &serde_json::Value) -> Vec<ConfigEntry> {
+    let Some(array) = value.as_array() else {
+        return Vec::new();
+    };
+    array
+        .iter()
+        .filter_map(|entry| entry.as_object())
+        .map(|object| ConfigEntry {
+            name: object
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            command_line: object
+                .get("command_line")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        })
+        .collect()
+}
+
+/// The one-time v0.2 → v0.3 migration of a legacy `last_path` (v0.3 M2):
+/// when the path names `server.requests.jsonl` inside a `logs` directory,
+/// the grandparent directory is the NInfer installation folder; otherwise
+/// the path is not an install folder and is dropped.
+fn legacy_install_folder(last_path: &str) -> Option<String> {
+    let path = Path::new(last_path);
+    let is_log_file = path
+        .file_name()
+        .is_some_and(|name| name == "server.requests.jsonl");
+    let is_logs_dir = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|name| name == "logs");
+    if is_log_file && is_logs_dir {
+        path.parent()
+            .and_then(|p| p.parent())
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().to_string())
+    } else {
+        None
+    }
 }
 
 /// Whether the file at `path` is malformed (present but not a JSON object)
@@ -356,7 +480,8 @@ mod tests {
     #[test]
     fn defaults_match_prd() {
         let c = Config::default();
-        assert_eq!(c.last_path, None);
+        assert_eq!(c.install_folder, None);
+        assert_eq!(c.log_file_folder, default_log_file_folder());
         assert_eq!(
             c.log_poll_interval_ms,
             DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64
@@ -393,9 +518,9 @@ mod tests {
     fn load_partial_config_fills_missing_fields() {
         let (_dir, path) = temp_config();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, r#"{"last_path":"logs/x.jsonl"}"#).unwrap();
+        std::fs::write(&path, r#"{"install_folder":"C:/ninfer"}"#).unwrap();
         let c = load(&path);
-        assert_eq!(c.last_path, Some("logs/x.jsonl".to_owned()));
+        assert_eq!(c.install_folder, Some("C:/ninfer".to_owned()));
         assert_eq!(
             c.log_poll_interval_ms,
             DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64
@@ -403,6 +528,100 @@ mod tests {
         assert_eq!(c.gpu_poll_interval_ms, DEFAULT_GPU_POLL_MS);
         assert_eq!(c.chart_window_ms, DEFAULT_WINDOW_MS);
         assert_eq!(c.max_requests, DEFAULT_MAX_REQUESTS);
+    }
+
+    #[test]
+    fn load_log_file_folder_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"log_file_folder":"C:/logs"}"#).unwrap();
+        assert_eq!(load(&path).log_file_folder, "C:/logs");
+        // Wrong type -> default.
+        std::fs::write(&path, r#"{"log_file_folder":42}"#).unwrap();
+        assert_eq!(load(&path).log_file_folder, default_log_file_folder());
+        // An empty or blank value is normalized to the default.
+        std::fs::write(&path, r#"{"log_file_folder":""}"#).unwrap();
+        assert_eq!(load(&path).log_file_folder, default_log_file_folder());
+        std::fs::write(&path, r#"{"log_file_folder":"   "}"#).unwrap();
+        assert_eq!(load(&path).log_file_folder, default_log_file_folder());
+    }
+
+    #[test]
+    fn load_migrates_legacy_last_path_to_install_folder() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"last_path":"C:/ninfer/logs/server.requests.jsonl"}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path).install_folder, Some("C:/ninfer".to_owned()));
+        // Unix separators are handled the same way.
+        std::fs::write(
+            &path,
+            r#"{"last_path":"/opt/ninfer/logs/server.requests.jsonl"}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path).install_folder, Some("/opt/ninfer".to_owned()));
+    }
+
+    #[test]
+    fn load_drops_legacy_last_path_that_is_not_a_log_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Not the log file name.
+        std::fs::write(&path, r#"{"last_path":"C:/ninfer/logs/other.jsonl"}"#).unwrap();
+        assert_eq!(load(&path).install_folder, None);
+        // Not inside a `logs` directory.
+        std::fs::write(
+            &path,
+            r#"{"last_path":"C:/elsewhere/server.requests.jsonl"}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path).install_folder, None);
+        // A bare file name has no install folder to derive.
+        std::fs::write(&path, r#"{"last_path":"server.requests.jsonl"}"#).unwrap();
+        assert_eq!(load(&path).install_folder, None);
+    }
+
+    #[test]
+    fn load_install_folder_takes_precedence_over_legacy_last_path() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"install_folder":"C:/a","last_path":"C:/b/logs/server.requests.jsonl"}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path).install_folder, Some("C:/a".to_owned()));
+    }
+
+    #[test]
+    fn load_blank_install_folder_is_none() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"install_folder":""}"#).unwrap();
+        assert_eq!(load(&path).install_folder, None);
+        std::fs::write(&path, r#"{"install_folder":"   "}"#).unwrap();
+        assert_eq!(load(&path).install_folder, None);
+        // A blank install folder still suppresses the legacy last_path
+        // migration (the v0.3 key is present).
+        std::fs::write(
+            &path,
+            r#"{"install_folder":"","last_path":"C:/b/logs/server.requests.jsonl"}"#,
+        )
+        .unwrap();
+        assert_eq!(load(&path).install_folder, None);
+    }
+
+    #[test]
+    fn legacy_install_folder_requires_a_grandparent() {
+        assert_eq!(
+            legacy_install_folder("C:/ninfer/logs/server.requests.jsonl"),
+            Some("C:/ninfer".to_owned())
+        );
+        assert_eq!(legacy_install_folder("logs/server.requests.jsonl"), None);
+        assert_eq!(legacy_install_folder("server.requests.jsonl"), None);
     }
 
     #[test]
@@ -583,6 +802,185 @@ mod tests {
     }
 
     #[test]
+    fn load_control_split_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"control_split":0.3}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(c.control_split, 0.3);
+        assert_eq!(c.control_split(), 0.3);
+    }
+
+    #[test]
+    fn load_control_split_defaults_when_absent() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"max_requests":250}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(c.control_split, DEFAULT_CONTROL_SPLIT);
+    }
+
+    #[test]
+    fn load_control_split_defaults_wrong_typed_field() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"control_split":"wide"}"#).unwrap();
+        let c = load(&path);
+        assert_eq!(c.control_split, DEFAULT_CONTROL_SPLIT);
+    }
+
+    #[test]
+    fn control_split_clamps_out_of_range() {
+        let c = Config {
+            control_split: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(c.control_split(), MIN_CONTROL_SPLIT);
+        let c = Config {
+            control_split: 0.99,
+            ..Default::default()
+        };
+        assert_eq!(c.control_split(), MAX_CONTROL_SPLIT);
+        let c = Config {
+            control_split: 0.4,
+            ..Default::default()
+        };
+        assert_eq!(c.control_split(), 0.4);
+    }
+
+    #[test]
+    fn load_configs_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"configs":[{"name":"my-server","command_line":"--model x --port 8080"},{"name":"bench-run","command_line":""}]}"#,
+        )
+        .unwrap();
+        let c = load(&path);
+        assert_eq!(
+            c.configs,
+            vec![
+                ConfigEntry {
+                    name: "my-server".to_owned(),
+                    command_line: "--model x --port 8080".to_owned(),
+                },
+                ConfigEntry {
+                    name: "bench-run".to_owned(),
+                    command_line: String::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_configs_defaults_to_empty_when_absent() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"max_requests":250}"#).unwrap();
+        let c = load(&path);
+        assert!(c.configs.is_empty());
+        assert_eq!(c.max_requests, 250);
+    }
+
+    #[test]
+    fn load_configs_non_array_is_empty() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"configs":42}"#).unwrap();
+        assert!(load(&path).configs.is_empty());
+        std::fs::write(&path, r#"{"configs":{"name":"x"}}"#).unwrap();
+        assert!(load(&path).configs.is_empty());
+    }
+
+    #[test]
+    fn load_configs_skips_malformed_entries_independently() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A non-object entry (a string) is skipped; the valid entries around
+        // it are kept.
+        std::fs::write(
+            &path,
+            r#"{"configs":["junk",{"name":"a","command_line":"--x"},42,{"name":"b","command_line":"--y"}]}"#,
+        )
+        .unwrap();
+        let c = load(&path);
+        assert_eq!(
+            c.configs,
+            vec![
+                ConfigEntry {
+                    name: "a".to_owned(),
+                    command_line: "--x".to_owned(),
+                },
+                ConfigEntry {
+                    name: "b".to_owned(),
+                    command_line: "--y".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_configs_defaults_wrong_typed_fields() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A missing or wrong-typed field inside an entry falls back to the
+        // empty string; the entry itself is kept.
+        std::fs::write(
+            &path,
+            r#"{"configs":[{"name":42,"command_line":"--x"},{"command_line":7},{"name":"c"}]}"#,
+        )
+        .unwrap();
+        let c = load(&path);
+        assert_eq!(
+            c.configs,
+            vec![
+                ConfigEntry {
+                    name: String::new(),
+                    command_line: "--x".to_owned(),
+                },
+                ConfigEntry {
+                    name: String::new(),
+                    command_line: String::new(),
+                },
+                ConfigEntry {
+                    name: "c".to_owned(),
+                    command_line: String::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn load_running_config_from_file() {
+        let (_dir, path) = temp_config();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"running_config":"my-server"}"#).unwrap();
+        assert_eq!(load(&path).running_config, Some("my-server".to_owned()));
+        std::fs::write(&path, r#"{"running_config":""}"#).unwrap();
+        assert_eq!(load(&path).running_config, None);
+        std::fs::write(&path, r#"{"running_config":"   "}"#).unwrap();
+        assert_eq!(load(&path).running_config, None);
+        std::fs::write(&path, r#"{"running_config":42}"#).unwrap();
+        assert_eq!(load(&path).running_config, None);
+    }
+
+    #[test]
+    fn parse_configs_handles_non_array_and_empty() {
+        assert!(parse_configs(&serde_json::json!(42)).is_empty());
+        assert!(parse_configs(&serde_json::json!("x")).is_empty());
+        assert!(parse_configs(&serde_json::json!(null)).is_empty());
+        assert!(parse_configs(&serde_json::json!([])).is_empty());
+        assert_eq!(
+            parse_configs(&serde_json::json!([{"name":"a","command_line":"--b"}])),
+            vec![ConfigEntry {
+                name: "a".to_owned(),
+                command_line: "--b".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
     fn load_table_columns_from_file() {
         let (_dir, path) = temp_config();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -642,9 +1040,9 @@ mod tests {
     fn load_ignores_unknown_fields() {
         let (_dir, path) = temp_config();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, r#"{"last_path":"x","future_setting":42}"#).unwrap();
+        std::fs::write(&path, r#"{"future_setting":42}"#).unwrap();
         let c = load(&path);
-        assert_eq!(c.last_path, Some("x".to_owned()));
+        assert_eq!(c.install_folder, None);
     }
 
     #[test]
@@ -653,11 +1051,11 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            r#"{"last_path":"logs/x.jsonl","log_poll_interval_ms":"fast"}"#,
+            r#"{"install_folder":"C:/ninfer","log_poll_interval_ms":"fast"}"#,
         )
         .unwrap();
         let c = load(&path);
-        assert_eq!(c.last_path, Some("logs/x.jsonl".to_owned()));
+        assert_eq!(c.install_folder, Some("C:/ninfer".to_owned()));
         assert_eq!(
             c.log_poll_interval_ms,
             DEFAULT_LOG_POLL_INTERVAL.as_millis() as u64
@@ -688,18 +1086,22 @@ mod tests {
     #[test]
     fn out_of_range_values_are_clamped() {
         let c = Config {
-            last_path: None,
+            install_folder: None,
+            log_file_folder: default_log_file_folder(),
             log_poll_interval_ms: 1,
             gpu_poll_interval_ms: 1,
             chart_window_ms: 999_999_999,
             max_requests: 1,
             temp_unit: "F".to_owned(),
             split_panels: SplitPanels::default(),
+            control_split: DEFAULT_CONTROL_SPLIT,
             table_columns: None,
             window_state: None,
             update_check_enabled: true,
             update_check_period_days: 0,
             last_update_check_unix_ms: None,
+            configs: Vec::new(),
+            running_config: None,
         };
         assert_eq!(
             c.log_poll_interval(),
@@ -717,18 +1119,22 @@ mod tests {
         );
 
         let c = Config {
-            last_path: None,
+            install_folder: None,
+            log_file_folder: default_log_file_folder(),
             log_poll_interval_ms: 999_999,
             gpu_poll_interval_ms: 999_999,
             chart_window_ms: 1_000,
             max_requests: 999_999,
             temp_unit: "F".to_owned(),
             split_panels: SplitPanels::default(),
+            control_split: DEFAULT_CONTROL_SPLIT,
             table_columns: None,
             window_state: None,
             update_check_enabled: true,
             update_check_period_days: 999,
             last_update_check_unix_ms: None,
+            configs: Vec::new(),
+            running_config: None,
         };
         assert_eq!(
             c.log_poll_interval(),
@@ -750,7 +1156,8 @@ mod tests {
     fn save_creates_parent_dirs_and_round_trips() {
         let (_dir, path) = temp_config();
         let c = Config {
-            last_path: Some("logs/x.jsonl".to_owned()),
+            install_folder: Some("C:/ninfer".to_owned()),
+            log_file_folder: "C:/logs".to_owned(),
             log_poll_interval_ms: 100,
             gpu_poll_interval_ms: 3_000,
             chart_window_ms: 900_000,
@@ -760,11 +1167,23 @@ mod tests {
                 charts: 0.7,
                 table: 0.3,
             },
+            control_split: 0.6,
             table_columns: None,
             window_state: None,
             update_check_enabled: false,
             update_check_period_days: 7,
             last_update_check_unix_ms: Some(1_700_000_000_000),
+            configs: vec![
+                ConfigEntry {
+                    name: "my-server".to_owned(),
+                    command_line: "--model qwen3.8-27b-nvfp4 --port 8080".to_owned(),
+                },
+                ConfigEntry {
+                    name: "bench-run".to_owned(),
+                    command_line: String::new(),
+                },
+            ],
+            running_config: Some("my-server".to_owned()),
         };
         save(&path, &c).unwrap();
         assert_eq!(load(&path), c);
@@ -775,7 +1194,8 @@ mod tests {
         let (_dir, path) = temp_config();
         save(&path, &Config::default()).unwrap();
         let c = Config {
-            last_path: Some("y".to_owned()),
+            install_folder: Some("y".to_owned()),
+            log_file_folder: "C:/logs2".to_owned(),
             log_poll_interval_ms: 200,
             gpu_poll_interval_ms: 7_000,
             chart_window_ms: 60_000,
@@ -785,11 +1205,17 @@ mod tests {
                 charts: 0.4,
                 table: 0.6,
             },
+            control_split: 0.3,
             table_columns: None,
             window_state: None,
             update_check_enabled: true,
             update_check_period_days: 14,
             last_update_check_unix_ms: Some(1_700_000_123_456),
+            configs: vec![ConfigEntry {
+                name: "only".to_owned(),
+                command_line: "--port 9090".to_owned(),
+            }],
+            running_config: None,
         };
         save(&path, &c).unwrap();
         assert_eq!(load(&path), c);

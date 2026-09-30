@@ -42,7 +42,8 @@ pub fn snapshot(store: &Store) -> ServerInfoSnapshot {
 /// True when the panel must be (re)applied: nothing was applied yet or the
 /// current snapshot differs from the last-applied one. Comparing snapshots
 /// instead of a `server_start` counter keeps the panel in sync when the
-/// store is reset (server restart) or replaced (Open file).
+/// store is reset (server restart) or the log file is switched (startup
+/// Start, Settings Save).
 pub fn needs_update(last: &Option<ServerInfoSnapshot>, current: &ServerInfoSnapshot) -> bool {
     last.as_ref() != Some(current)
 }

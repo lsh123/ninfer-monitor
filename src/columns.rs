@@ -85,7 +85,7 @@ pub const MIN_WIDTHS: [u32; Column::COUNT] = [32, 85, 100, 48, 48, 52, 52, 48, 1
 /// defaults are independent of the window width; the `Model` column default
 /// is the remainder at the default window width (1280px) — `rebalance`
 /// adjusts it to the actual window width at startup and on resize.
-pub const DEFAULT_WIDTHS: [u32; Column::COUNT] = [40, 105, 456, 60, 60, 65, 65, 60, 150, 75];
+pub const DEFAULT_WIDTHS: [u32; Column::COUNT] = [40, 105, 352, 60, 60, 65, 65, 60, 150, 75];
 
 /// The tolerated difference (logical px) between the saved and the current
 /// window width for the saved column widths to be restored (M7).
@@ -162,11 +162,20 @@ pub fn slider_columns(slider: i32) -> Option<(Column, Column)> {
 
 /// The width (logical px) available for the `Column::COUNT` table columns
 /// at a main window of `window_width` logical px (M7): the window minus the
-/// main-area padding (2×8px), the table padding (2×8px), the header-row
-/// padding (2×8px), the expand-symbol cell (16px), the cell gap after it
-/// (8px), and the `SLIDER_COUNT` dividers (`SLIDER_COUNT`×8px).
+/// main-area padding (2×8px), the left tab bar (96px), the tab-bar/right-column
+/// spacing (8px), the table padding (2×8px), the header-row padding (2×8px),
+/// the expand-symbol cell (16px), the cell gap after it (8px), and the
+/// `SLIDER_COUNT` dividers (`SLIDER_COUNT`×8px).
 pub fn available_column_width(window_width: f32) -> u32 {
-    let available = window_width - 8.0 * 6.0 - 16.0 - 8.0 - SLIDER_COUNT as f32 * 8.0;
+    let available = window_width
+        - 8.0 * 2.0 // main-area padding
+        - 96.0 // left tab bar
+        - 8.0 // tab-bar/right-column spacing
+        - 8.0 * 2.0 // table padding
+        - 8.0 * 2.0 // header-row padding
+        - 16.0 // expand-symbol cell
+        - 8.0 // cell gap
+        - SLIDER_COUNT as f32 * 8.0; // dividers
     available.max(0.0).round() as u32
 }
 
@@ -315,18 +324,18 @@ mod tests {
         let w = ColumnWidths::default();
         assert_eq!(w.width(Column::Id), 40);
         assert_eq!(w.width(Column::Time), 105);
-        assert_eq!(w.width(Column::Model), 456);
+        assert_eq!(w.width(Column::Model), 352);
         assert_eq!(w.width(Column::Status), 75);
         // The fixed columns sum to 680; at the default 1280px window the
-        // Model column is the remainder (1136 - 680 = 456).
-        assert_eq!(w.total(), 1136);
-        assert_eq!(available_column_width(1280.0), 1136);
+        // Model column is the remainder (1032 - 680 = 352).
+        assert_eq!(w.total(), 1032);
+        assert_eq!(available_column_width(1280.0), 1032);
     }
 
     #[test]
     fn available_width_tracks_the_window() {
-        assert_eq!(available_column_width(1024.0), 880);
-        assert_eq!(available_column_width(1408.0), 1264);
+        assert_eq!(available_column_width(1024.0), 776);
+        assert_eq!(available_column_width(1408.0), 1160);
         assert_eq!(available_column_width(100.0), 0);
     }
 
@@ -380,9 +389,9 @@ mod tests {
     fn move_divider_works_with_the_model_column() {
         let w = ColumnWidths::default();
         // The divider between Model and Prompt: the Model column absorbs.
-        let r = w.move_divider(Column::Model, Column::Prompt, 356.0);
-        assert_eq!(r.width(Column::Model), 356);
-        assert_eq!(r.width(Column::Prompt), 60 + (456 - 356));
+        let r = w.move_divider(Column::Model, Column::Prompt, 300.0);
+        assert_eq!(r.width(Column::Model), 300);
+        assert_eq!(r.width(Column::Prompt), 60 + (352 - 300));
         assert_eq!(r.total(), w.total());
     }
 
@@ -390,9 +399,9 @@ mod tests {
     fn rebalance_sets_the_model_column_to_the_remainder() {
         let mut w = ColumnWidths::default();
         rebalance(1280.0, &mut w);
-        assert_eq!(w.width(Column::Model), 456);
+        assert_eq!(w.width(Column::Model), 352);
         rebalance(1408.0, &mut w);
-        assert_eq!(w.width(Column::Model), 456 + 128);
+        assert_eq!(w.width(Column::Model), 480);
         assert_eq!(w.width(Column::Id), 40, "the fixed columns are untouched");
         assert_eq!(w.total(), available_column_width(1408.0));
     }

@@ -237,8 +237,12 @@ fn apply_request_rows(window: &MainWindow, store: &Store) {
 }
 
 fn set_live_state(window: &MainWindow) -> Rc<Store> {
-    window.set_file_name("tests/fixtures/server.requests.jsonl".into());
-    window.set_file_name_full("tests/fixtures/server.requests.jsonl".into());
+    // The live dashboard is the Monitor tab; activate it explicitly (the
+    // default startup tab is the Control tab). Callers that want another tab
+    // override this with `set_active_tab`.
+    window.set_active_tab(1);
+    window.set_install_folder("C:\\NInfer".into());
+    window.set_install_folder_full("C:\\NInfer".into());
     window.set_last_event("14:02:58.124".into());
     window.set_errors_text("Errors: 11".into());
     window.set_skipped_text("Skipped 0".into());
@@ -407,31 +411,31 @@ fn screenshot_gpu_celsius() {
 
 #[test]
 fn screenshot_initial() {
-    // The no-file startup state (PRD v0.2 §3.1/M1): the startup screen is
-    // shown with the "no file" message and a disabled Start button.
+    // The no-folder startup state (PRD v0.3 §3.2.1/M2): the startup screen is
+    // shown with the "no folder" message and a disabled Start button.
     let window = new_window();
     window.set_startup_visible(true);
     window.set_startup_version(env!("CARGO_PKG_VERSION").into());
-    window.set_startup_message(ninfer_monitor::startup::MSG_NO_FILE.into());
-    window.set_startup_file("".into());
+    window.set_startup_message(ninfer_monitor::startup::MSG_NO_FOLDER.into());
+    window.set_startup_folder("".into());
     window.set_startup_start_enabled(false);
     let (width, height, rgba) = capture(&window);
     check_snapshot("initial", width, height, &rgba);
 }
 
 #[test]
-fn screenshot_startup_unreadable() {
-    // The unreadable-file startup state (PRD v0.2 §3.1/M1): the startup screen
-    // is shown with the "cannot be read" message, the file pre-filled, and a
-    // disabled Start button.
+fn screenshot_startup_invalid_folder() {
+    // The invalid-folder startup state (PRD v0.3 §3.2.1/M2): the startup
+    // screen is shown with the "invalid folder" message, the folder
+    // pre-filled, and a disabled Start button.
     let window = new_window();
     window.set_startup_visible(true);
     window.set_startup_version(env!("CARGO_PKG_VERSION").into());
-    window.set_startup_message(ninfer_monitor::startup::MSG_UNREADABLE.into());
-    window.set_startup_file("C:\\NInfer\\logs\\server.requests.jsonl".into());
+    window.set_startup_message(ninfer_monitor::startup::MSG_INVALID_FOLDER.into());
+    window.set_startup_folder("C:\\NInfer".into());
     window.set_startup_start_enabled(false);
     let (width, height, rgba) = capture(&window);
-    check_snapshot("startup-unreadable", width, height, &rgba);
+    check_snapshot("startup-invalid-folder", width, height, &rgba);
 }
 
 #[test]
@@ -529,11 +533,12 @@ fn screenshot_settings() {
     set_live_state(&window);
     window.set_settings_log_poll_ms(500);
     window.set_settings_gpu_poll_ms(5_000);
-    window.set_settings_file("C:\\logs\\server.requests.jsonl".into());
+    window.set_settings_install_folder("C:\\NInfer".into());
+    window.set_settings_log_file_folder("C:\\logs".into());
     // Show the Windows-only NVIDIA game-popup link (PRD v0.2 §3.2) so the
     // snapshot is deterministic regardless of the host platform.
     window.set_nvidia_popup_visible(true);
-    window.set_settings_visible(true);
+    window.set_active_tab(2);
     let (width, height, rgba) = capture(&window);
     check_snapshot("settings", width, height, &rgba);
 }
@@ -542,13 +547,156 @@ fn screenshot_settings() {
 fn screenshot_about() {
     let window = new_window();
     set_live_state(&window);
-    window.set_settings_log_poll_ms(500);
-    window.set_settings_gpu_poll_ms(5_000);
-    window.set_settings_visible(true);
     window.set_about_version(env!("CARGO_PKG_VERSION").into());
     window.set_about_visible(true);
     let (width, height, rgba) = capture(&window);
     check_snapshot("about", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_control_tab() {
+    // The Control tab (v0.3 M3): the configurations list with the first
+    // configuration selected and its name / command line in the edit panel.
+    let window = new_window();
+    set_live_state(&window);
+    window.set_active_tab(0);
+    let rows: Vec<ConfigRow> = vec![
+        ConfigRow {
+            name: "my-server".into(),
+            running: false,
+            error: false,
+        },
+        ConfigRow {
+            name: "bench-run".into(),
+            running: false,
+            error: false,
+        },
+        ConfigRow {
+            name: "Config 3".into(),
+            running: false,
+            error: false,
+        },
+    ];
+    window.set_control_rows(ModelRc::from(Rc::new(slint::VecModel::from(rows))));
+    window.set_control_selected(0);
+    window.set_control_start_enabled(true);
+    window.set_control_restart_enabled(true);
+    window.set_control_stop_enabled(false);
+    window.set_control_delete_enabled(true);
+    window.set_control_status("".into());
+    window.set_control_status_error(false);
+    window.set_control_name("my-server".into());
+    window.set_control_command_line("--model qwen3.8-27b-nvfp4 --port 8080".into());
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("control-tab", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_control_tab_error() {
+    let window = new_window();
+    set_live_state(&window);
+    window.set_active_tab(0);
+    let rows: Vec<ConfigRow> = vec![
+        ConfigRow {
+            name: "my-server".into(),
+            running: false,
+            error: true,
+        },
+        ConfigRow {
+            name: "bench-run".into(),
+            running: false,
+            error: false,
+        },
+        ConfigRow {
+            name: "Config 3".into(),
+            running: false,
+            error: false,
+        },
+    ];
+    window.set_control_rows(ModelRc::from(Rc::new(slint::VecModel::from(rows))));
+    window.set_control_selected(0);
+    window.set_control_start_enabled(true);
+    window.set_control_restart_enabled(true);
+    window.set_control_stop_enabled(false);
+    window.set_control_delete_enabled(true);
+    window.set_control_status(
+        "Error: the process exited with exit code 3\nboom: failed to load the model".into(),
+    );
+    window.set_control_status_error(true);
+    window.set_control_name("my-server".into());
+    window.set_control_command_line("--model qwen3.8-27b-nvfp4 --port 8080".into());
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("control-tab-error", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_control_tab_scrollbars() {
+    let window = new_window();
+    set_live_state(&window);
+    window.set_active_tab(0);
+    let rows: Vec<ConfigRow> = (0..30)
+        .map(|index| ConfigRow {
+            name: format!("Config {index}").into(),
+            running: false,
+            error: false,
+        })
+        .collect();
+    window.set_control_rows(ModelRc::from(Rc::new(slint::VecModel::from(rows))));
+    window.set_control_selected(0);
+    window.set_control_start_enabled(true);
+    window.set_control_restart_enabled(true);
+    window.set_control_stop_enabled(false);
+    window.set_control_delete_enabled(true);
+    window.set_control_status("".into());
+    window.set_control_status_error(false);
+    window.set_control_name("Config 0".into());
+    window.set_control_command_line(
+        (0..30)
+            .map(|index| format!("--option-{index} value-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into(),
+    );
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("control-tab-scrollbars", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_control_delete_confirm() {
+    let window = new_window();
+    set_live_state(&window);
+    window.set_active_tab(0);
+    let rows: Vec<ConfigRow> = vec![
+        ConfigRow {
+            name: "my-server".into(),
+            running: false,
+            error: false,
+        },
+        ConfigRow {
+            name: "bench-run".into(),
+            running: false,
+            error: false,
+        },
+        ConfigRow {
+            name: "Config 3".into(),
+            running: false,
+            error: false,
+        },
+    ];
+    window.set_control_rows(ModelRc::from(Rc::new(slint::VecModel::from(rows))));
+    window.set_control_selected(0);
+    window.set_control_start_enabled(true);
+    window.set_control_restart_enabled(true);
+    window.set_control_stop_enabled(false);
+    window.set_control_delete_enabled(true);
+    window.set_control_status("".into());
+    window.set_control_status_error(false);
+    window.set_control_name("my-server".into());
+    window.set_control_command_line("--model qwen3.8-27b-nvfp4 --port 8080".into());
+    window.set_control_delete_confirm_visible(true);
+    window.set_control_delete_confirm_name("my-server".into());
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("control-delete-confirm", width, height, &rgba);
 }
 
 #[test]
@@ -577,13 +725,13 @@ fn screenshot_request_detail() {
 fn screenshot_table_columns() {
     // The request table with the column widths changed from the defaults
     // (M7): the header sliders and the row cells follow the new widths (the
-    // total stays 1136px, the available column width at the default 1280px
+    // total stays 1032px, the available column width at the default 1280px
     // window).
     let window = new_window();
     set_live_state(&window);
     window.set_col_id(56.0);
     window.set_col_time(120.0);
-    window.set_col_model(320.0);
+    window.set_col_model(216.0);
     window.set_col_prompt(72.0);
     window.set_col_compl(72.0);
     window.set_col_think(72.0);
@@ -598,8 +746,8 @@ fn screenshot_table_columns() {
 #[test]
 fn screenshot_update() {
     // The update-available state (M8 §5.3): the background check found a
-    // newer release, so the update button is shown in the toolbar, left of
-    // the settings button.
+    // newer release, so the update button is shown in the left tab bar,
+    // above the About button.
     let window = new_window();
     set_live_state(&window);
     window.set_update_available(true);
@@ -625,4 +773,16 @@ fn screenshot_update_dialog() {
     window.set_update_visible(true);
     let (width, height, rgba) = capture(&window);
     check_snapshot("update-dialog", width, height, &rgba);
+}
+
+#[test]
+fn screenshot_latest_version_dialog() {
+    // The "Up to date" dialog (M8): the manual update check found no newer
+    // release, so the dialog shows the current version and an OK button.
+    let window = new_window();
+    set_live_state(&window);
+    window.set_latest_version(env!("CARGO_PKG_VERSION").into());
+    window.set_latest_version_visible(true);
+    let (width, height, rgba) = capture(&window);
+    check_snapshot("latest-version-dialog", width, height, &rgba);
 }

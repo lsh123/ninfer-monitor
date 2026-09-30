@@ -33,7 +33,7 @@ pub const PROFILE_NAME: &str = "NInferMonitorProfile";
 /// binary name, or the driver will not recognize the app.
 pub const EXE_NAME: &str = "ninfer-monitor.exe";
 
-/// The settings-dialog status string shown on success (PRD v0.2 §3.2).
+/// The Settings tab status string shown on success (PRD v0.2 §3.2).
 pub const SUCCESS_MESSAGE: &str = "NVIDIA game popup disabled.";
 
 /// Adds the app profile that disables the NVIDIA game popup for [`EXE_NAME`].
@@ -64,7 +64,7 @@ pub fn remove_profile() -> Result<(), String> {
     }
 }
 
-/// Adds the app profile for the settings dialog: it re-launches the app
+/// Adds the app profile for the Settings tab: it re-launches the app
 /// elevated (a UAC prompt) when this process lacks the privilege to write the
 /// machine-wide (per-machine) profile, waits for the elevated copy to finish,
 /// and reports its result. [`add_profile`] is the in-process operation used by
@@ -80,7 +80,7 @@ pub fn add_profile_interactive() -> Result<(), String> {
     }
 }
 
-/// Removes the app profile for the settings dialog, re-launching elevated (UAC)
+/// Removes the app profile for the Settings tab, re-launching elevated (UAC)
 /// when not privileged (see [`add_profile_interactive`]).
 pub fn remove_profile_interactive() -> Result<(), String> {
     #[cfg(windows)]

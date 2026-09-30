@@ -13,9 +13,10 @@ dashboard.
 - Single-package layout: the crate (package name `ninfer-monitor`, Rust
   edition 2024) lives at the repo root as a lib + binary pair: the library
     (`src/lib.rs`) holds the testable modules (tail, parser, store, metrics,
-    pipeline, config, chart, columns, kpi, requests, server_info, split,
-    startup, window_state, gpu, nvidia_popup, update_check), the binary
-    (`src/main.rs`) is the Slint GUI entry point.
+    pipeline, process_control, config, config_import, configs, chart,
+    columns, kpi, requests, server_info, split, startup, window_state, gpu,
+    nvidia_popup, update_check), the binary (`src/main.rs`) is the Slint GUI
+    entry point.
 
 ## Repo layout
 
@@ -31,7 +32,8 @@ NInferMonitor/
 ├── vs-cargo.bat                  # MSVC env wrapper: cmd /c vs-cargo.bat build
 ├── docs/
 │   ├── PRD-v0.1.md               # v0.1 PRD (FR/NFR, milestones M1–M12)
-│   └── PRD-v0.2.md               # v0.2 PRD
+│   ├── PRD-v0.2.md               # v0.2 PRD
+│   └── PRD-v0.3.md               # v0.3 PRD
 ├── packaging/
 │   └── nsis/
 │       └── installer.nsi         # (M6) vendored cargo-packager NSIS template + NVIDIA profile install/uninstall hooks
@@ -56,14 +58,17 @@ NInferMonitor/
     ├── store.rs                  # (M4) in-memory state
     ├── metrics.rs                # (M4) derived metrics
     ├── pipeline.rs               # (M5) tail -> parse -> store, 4 Hz snapshots
+    ├── process_control.rs        # (v0.3 M4) NInfer process control: command-line tokenization, program path, log-file determination
     ├── config.rs                 # (M11) JSON config load/save + defaults
+    ├── config_import.rs          # (v0.3 M6) launcher-script config import: dialect-aware `ninfer-serve` invocation parsing (batch `.bat` / shell `.sh`), folder scan + name dedup
+    ├── configs.rs                # (v0.3 M3) Control-tab domain logic: default configuration names, name/command-line validation
     ├── chart.rs                  # (M6) Plotters chart rendering
     ├── columns.rs                # (v0.2 M7) request-table column widths (drag dividers, persistence)
     ├── kpi.rs                    # (M7) KPI card formatting
     ├── requests.rs               # (M8) request table + detail formatting
     ├── server_info.rs            # (M9) server info panel formatting
     ├── split.rs                  # (FR-7.5) draggable split-panel fractions
-    ├── startup.rs                # (v0.2 M1) startup-screen state (file presence/readability)
+    ├── startup.rs                # (v0.3 M2) startup-screen state (install-folder validity, monitored log path)
     ├── window_state.rs           # main-window geometry persistence/restore
     ├── gpu.rs                    # (v0.2 M4) NVML GPU polling + widget data (°F/°C)
     ├── nvidia_popup.rs           # (v0.2 M6) NVIDIA game-popup DRS app profile (NVAPI, Windows)
@@ -72,6 +77,8 @@ NInferMonitor/
         ├── mod.rs
         ├── main_window.slint     # top-level Slint UI
         ├── about_panel.slint
+        ├── confirm_delete_panel.slint # (v0.3 M3) delete-configuration confirmation dialog
+        ├── control_panel.slint   # (v0.3 M3) Control tab (configurations list, Start/Restart/Stop/Add/Delete buttons, edit panel, status line)
         ├── dark_button.slint
         ├── gpu_row.slint         # (v0.2 M4) per-GPU row (2 metric widgets; usage title carries the GPU name)
         ├── metric_widget.slint
@@ -80,8 +87,9 @@ NInferMonitor/
         ├── settings_panel.slint
         ├── splitter.slint
         ├── status_bar.slint
+        ├── tab_button.slint      # (v0.3 M1) left tab-bar tab (icon + horizontal label, active highlight)
         ├── update_panel.slint    # (v0.2 M8) "New version available" dialog (OK downloads the installer and launches it, Windows only; Cancel also cancels a running download)
-        └── icons/                # SVG icons (chevron-down/right, gear, open-folder, pause, play, check, update) + app icon (app_icon.ico/.png/.svg)
+        └── icons/                # SVG icons (chevron-down/right, gear, open-folder, pause, play, check, update, power, pulse, info, add, delete, restart, stop) + app icon (app_icon.ico/.png/.svg)
 ```
 
 ## Copyright notice
@@ -178,7 +186,9 @@ with the software rasterizer, mock time, fixed 1280x800) via
 `Window::take_snapshot()` and compares the pixels against recorded PNGs in
 `tests/snapshots/`. One snapshot per UI state (initial, live,
 disconnected, cleared, server-restart, chart-window-1h, settings, about,
-request-detail, gpu, gpu-celsius, table-columns, update, update-dialog).
+request-detail, gpu, gpu-celsius, table-columns, update, update-dialog,
+control-tab, control-tab-error, control-tab-scrollbars,
+control-delete-confirm, startup-invalid-folder).
 The GPU snapshots inject
 synthetic GPU data (the live NVML poll is not used, so they stay
 deterministic).
@@ -192,53 +202,64 @@ deterministic).
   time, system fonts), so snapshots are machine-specific — record them on the
   machine that runs the tests.
 
-## Dialog styling (startup / settings / about)
+## Dialog styling (about / update)
 
-All dialogs share one style; follow it for any new dialog.
+The about and update dialogs share one style; follow it for any new dialog.
 
 - **Panel chrome**: `background: #252526`, `border-radius: 6px`,
   `border-width: 1px`, `border-color: #3c3c3c`.
 - **Backdrop**: full-window `Rectangle` with `background: #000000aa` and a
   `TouchArea` that closes the dialog on click; declared in `main_window.slint`
   before the panel.
-- **Placement**: fixed width set in `main_window.slint` (startup 560px,
-  settings 570px, about 380px), centered with
+- **Placement**: fixed width set in `main_window.slint` (about 380px,
+  update 420px), centered with
   `x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;`.
-- **Height**: settings and about hug their content — the panel root binds
+- **Height**: about and update hug their content — the panel root binds
   `height: <content-layout>.preferred-height;`. Do NOT bind to the child's
   actual `height` (binding loop) and do NOT set `cross-axis-alignment: start`
   on the content layout (children shrink to content width; controls must fill
-  the dialog width). The startup screen is the exception: fixed 560×320 with a
-  `vertical-stretch: 1` spacer before the footer buttons.
+  the dialog width).
 - **Content layout**: `padding: 48px`, `spacing: 12px`.
 - **Title**: plain `Text`, `font-size: 18px`, `font-weight: 700`,
   `color: #e0e0e0`. No close (×) button in the title — dialogs close via
   OK/Cancel, Escape, or the backdrop.
 - **Group spacers**: `Rectangle { height: 16px; }` rows between logical
-  groups: title → content, content → footer buttons (settings also separates
-  the content from the About link).
-- **Buttons**: `DarkButton` with `height: 24px`; footer buttons (OK/Cancel/
-  Start/Close) `width: 90px`; "Open File..." `width: 110px` with icon.
+  groups: title → content, content → footer buttons.
+- **Buttons**: `DarkButton` with `height: 24px`; footer buttons (OK/Cancel)
+  `width: 90px`.
 - **Focus & Escape**:
   - `click-blocker := TouchArea { width: parent.width; height: parent.height; }`
     as the panel's first child: catches clicks on empty space (focusing the
     scope) and stops them leaking through to the backdrop (which would close
     the dialog).
   - `scope := FocusScope` with a `KeyBinding` for `@keys(Escape)`.
-  - A 1 ms `focus-timer` focuses the scope when the dialog opens (settings,
-    startup).
+  - A 1 ms `focus-timer` focuses the scope when the dialog opens (about,
+    update); the Settings tab carries the same timer.
   - Settings' Escape is routed in `main_window.slint`: while the about dialog
     is open, Escape closes about first, then settings.
 - **Tests** (`tests/ui.rs`): `ElementHandle::mock_single_click` hit-tests at
   the element's center — the topmost `TouchArea` there receives the event, and
   focus is only assigned when a `TouchArea` receives the press. Escape tests
-   therefore click a non-interactive element inside the dialog (e.g.
-   `SettingsPanel::log-poll-label`, `AboutPanel::about-texts`) so the click lands on
-  the click-blocker, then `send_key(&window, '\u{1b}')`. Dimension tests assert
-  the fixed width and a content-based height range
-  (`settings_panel_is_wider_and_content_height`,
-  `about_panel_hugs_content_vertically`). Re-record screenshots after any
-  intentional dialog change.
+  therefore click a non-interactive element inside the dialog (e.g.
+  `SettingsPanel::log-poll-label`, `AboutPanel::about-texts`) so the click lands
+  on the click-blocker, then `send_key(&window, '\u{1b}')`. Dimension tests
+  assert the fixed width and a content-based height range
+  (`about_panel_hugs_content_vertically`,
+  `update_dialog_hugs_content_vertically`); the Settings tab is asserted to
+  fill the tab content (`settings_panel_fills_tab_content`). Re-record
+  screenshots after any intentional dialog change.
+
+The **startup screen** is NOT a dialog: it is a full-window state (no
+backdrop) with the same panel chrome and the same `FocusScope`/Escape/
+`focus-timer` pattern — 560px wide, centered, height
+`Math.max(content-layout.preferred-height, 200px)`, the app icon centered
+above the welcome text, `Open Folder...` 110×24 with icon, and
+`Start`/`Close` 90×24 footer buttons.
+
+The **Settings tab** is NOT a dialog: it is a tab content area (it fills the
+tab content — no backdrop, no fixed width) that reuses the same visual
+language — `#252526` panel chrome, `Save`/`Discard` 90×24 footer buttons, and
+Escape = Discard.
 
 ## Config & CLI (M11)
 
@@ -246,43 +267,118 @@ All dialogs share one style; follow it for any new dialog.
   created on first run. Missing or malformed file falls back to defaults —
   the app never crashes on config errors; a malformed file is repaired
   (rewritten with defaults) at startup.
-- Fields: `last_path` (last opened log), `log_poll_interval_ms` (clamped to
-  100..=5000, default 500 — the log-file tailing interval; renamed from
-  `poll_interval_ms` in v0.2, the old key is ignored), `gpu_poll_interval_ms`
-  (clamped to 1000..=10000, default 5000 — the NVML poll interval, v0.2 M4),
-  `chart_window_ms` (clamped to 60_000..=3_600_000, default 300_000),
-  `max_requests` (clamped to 10..=1000, default 1000 — the request-table row
-  cap, FR-5.5), `temp_unit` (`"F"`/`"C"`, default `"F"` — the GPU temperature
-   display unit, v0.2 M4), `split_panels` (draggable split-panel fractions,
-   FR-7.5), `table_columns` (request-table column widths + the window width
-   they were saved at, v0.2 M7), `window_state` (main-window geometry,
+- Fields: `install_folder` (the NInfer installation folder, v0.3 M2;
+  `None` until set — a blank stored value is normalized to `None` on load),
+  `log_file_folder` (the base folder of the monitored log file
+  `<log_file_folder>/ninfer-monitor/server.requests.jsonl`, default the OS
+  temp dir, v0.3 M2 — a blank stored value is normalized to the default on
+  load), `log_poll_interval_ms` (clamped to 100..=5000, default 500 — the
+  log-file tailing interval; renamed from `poll_interval_ms` in v0.2, the
+  old key is ignored), `gpu_poll_interval_ms` (clamped to 1000..=10000,
+  default 5000 — the NVML poll interval, v0.2 M4), `chart_window_ms`
+  (clamped to 60_000..=3_600_000, default 300_000), `max_requests` (clamped
+  to 10..=1000, default 1000 — the request-table row cap, FR-5.5),
+  `temp_unit` (`"F"`/`"C"`, default `"F"` — the GPU temperature display
+   unit, v0.2 M4), `split_panels` (draggable split-panel fractions,
+    FR-7.5), `control_split` (the Control-tab split: the configurations
+    list's share of the middle area, clamped to 0.15..=0.7, default 0.5 —
+    the edit panel takes the rest, v0.3 M3), `table_columns`
+    (request-table column widths + the window width they were saved at,
+    v0.2 M7), `window_state` (main-window geometry,
     optional), `update_check_enabled` (default `true` — the automatic update
     check, v0.2 M8), `update_check_period_days` (clamped to 1..=14, default
     3 — the update-check period), `last_update_check_unix_ms` (the time of
     the last successful check, recorded by the background checker; `None`
-    until the first success). Out-of-range stored values are clamped and
-    written back at startup. `last_path` is saved on "Open file…";
+     until the first success), `configs` (the Control-tab configurations,
+      v0.3 M3 — a JSON array of `{name, command_line}` objects; a missing or
+      malformed array falls back to an empty list, and malformed entries are
+      skipped), `running_config` (the name of the configuration the app
+      started — persisted by a successful Start/Restart, cleared by Stop, a
+      detected process exit, and deleting the running configuration; a blank
+      or wrong-typed value falls back to `None`, v0.3 M4). Out-of-range
+      stored values are clamped and
+    written back at startup. A v0.2 `last_path` (last opened log) is
+    migrated once at load: when it names `server.requests.jsonl` inside a
+    `logs` directory, its grandparent directory becomes `install_folder`
+    (only when `install_folder` is absent). `install_folder` is saved on
+    startup Start and settings Save; `log_file_folder`,
     `log_poll_interval_ms`, `gpu_poll_interval_ms`, `max_requests`,
     `temp_unit`, `update_check_enabled`, and `update_check_period_days` on
-    settings "OK"; `chart_window_ms` on window change; `table_columns` on
-    column-divider release; `last_update_check_unix_ms` by the background
-    update checker after a successful check — the only config writer that
+     settings Save; `chart_window_ms` on window change; `table_columns` on
+     column-divider release; `control_split` on Control-tab splitter
+     release; `last_update_check_unix_ms` by the background
+      update checker after a successful check; `configs` on Control-tab Add,
+      Delete, and edit-panel apply; `running_config` by the process control
+      (set on a successful Start/Restart, cleared on Stop, a detected
+      process exit, and deleting the running configuration, and updated on a
+      rename of the running configuration) — the only config writer that
     runs off the event-loop thread, so every config writer holds
     `config::write_lock()` across its load-modify-save to keep concurrent
     saves from losing each other's field changes. Saves are atomic (temp
     file + rename); a missing or wrong-typed field falls back to its
     default independently of the others.
 - CLI: `--config <path>` / `--config=<path>` (overrides the config
-  location). Unexpected positional arguments warn on stderr and are
-  ignored.
+  location); a positional argument is the NInfer installation folder
+  (v0.3 M2) — it takes precedence over the configured `install_folder`, is
+  not persisted unless Start/Save is used, and a valid folder skips the
+  startup screen. Unknown flags are ignored.
 - All tests use temp config locations (`tempfile`); no test may touch the
   user's real config.
-- "Open file…" (startup screen) replaces the pipeline; the old pipeline is
-  stopped on a background thread so its thread joins don't block the UI
-  (NFR-2), and a re-click guard (`AtomicBool`) prevents stacked file
-  dialogs. The control handlers (`handle_open_file`/`handle_window_changed`)
-   are free functions so the tick/dialog callbacks stay thin and the logic is
-   unit-testable.
+- The startup Start and the Settings tab's Save replace the pipeline; the
+  old pipeline is stopped on a background thread so its thread joins don't
+  block the UI (NFR-2), and a re-click guard (`AtomicBool`) prevents
+   stacked folder dialogs. The control handlers
+   (`handle_startup_start`/`handle_startup_close`/`handle_settings_save`)
+   are free functions so the tick/dialog callbacks stay thin and the logic
+   is unit-testable.
+
+## Process control (v0.3 M4)
+
+`src/process_control.rs` (pure, no UI) holds the launch command-line logic:
+`tokenize` (whitespace splitting with double-quoted groups and
+backslash-escaped quotes), `program_path` (`<install_folder>/ninfer-serve`
+with the OS-specific extension, reusing `startup::ninfer_serve_exe_name`),
+and `determine_log_file` — scans the tokenized command line for
+`--request-log-jsonl` (the `--request-log-jsonl <path>` and
+`--request-log-jsonl=<path>` forms; the last occurrence with a value wins;
+a dangling option or an empty `--request-log-jsonl=` is treated as absent,
+and its tokens are dropped). If present, the path is resolved (a relative
+path against the install folder, an absolute path as-is) and the arguments
+are returned unchanged (not app-managed); if absent, `--request-log-jsonl
+<log_file_folder>/ninfer-monitor/server.requests.jsonl` is appended
+(app-managed).
+
+The binary (`main.rs`) tracks the launched child processes per
+configuration in `App::processes` (`HashMap<config id, TrackedProcess>`),
+where `TrackedProcess` wraps the `std::process::Child`, a bounded combined
+stdout/stderr buffer (the last 64 KiB), and the background reader threads:
+Start spawns the program with the determined arguments (`current_dir` = the
+install folder; stdout/stderr piped and drained in the background so the
+child never blocks on a full pipe, PRD §4.4), creates the app-managed log
+folder, deletes the previous app-managed log file (a failure does not block
+the start), and switches the Monitor tab to the determined log file via
+`switch_log_file`. A failed start (no install folder, an empty command
+line, a missing executable, or a spawn error) sets the configuration's
+`error` field and the Control-tab status line, and the row is marked red.
+Stop kills and reaps the child and joins its readers; Restart = Stop +
+Start. `poll_processes` runs on every UI tick (`on_tick`): a child that has
+exited (crash, external kill, or Stop) is reaped and its configuration's
+`running` flag cleared (the running state is per app instance, not
+persisted); a failed exit sets the configuration's `error` field and the
+status line to the exit code plus the captured console tail, and the row is
+marked red; a `try_wait` error is treated as a failed exit. Deleting a
+running configuration stops its process first. The name of the
+configuration the app started is persisted as `running_config` (set on a
+successful Start/Restart, cleared on Stop, a detected process exit, and
+deleting the running configuration, and updated on a rename of the running
+configuration); at startup (a valid configured or CLI installation folder)
+and after the startup screen's Start, `restart_running_config` starts the
+persisted configuration when it still exists (a case-insensitive name
+match) and is not already running. On exit,
+`stop_all_config_processes` kills and reaps every tracked server process
+(releasing its GPU memory) without clearing `running_config`; on Windows
+the child is spawned with `CREATE_NO_WINDOW`, so starting a configuration
+does not open a console window (PRD §4.4).
 
 ## NVIDIA game popup (v0.2 M6, Windows)
 
